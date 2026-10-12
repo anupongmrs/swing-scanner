@@ -23,19 +23,20 @@ html, body, [class*="css"], .stApp, .stMarkdown, button, input, textarea, select
 [data-testid="stMetricValue"], [data-testid="stMetricLabel"], [data-testid="stSidebar"] * {
   font-family: 'Poppins', 'Prompt', sans-serif !important;
 }
-:root { --ink:#111111; --paper:#F3F1EA; --lime:#D8E64B; --up:#4F7F52; --down:#C2362B; }
+:root { --ink:#111111; --paper:#FFFFFF; --cream:#F4F1EA; --lime:#D8E64B; --up:#3E7B45; --down:#C2362B; --line:#E4E0D6; }
 h1 { font-weight: 600 !important; letter-spacing: -0.03em; font-size: 2.6rem !important; }
 h2, h3 { font-weight: 600 !important; letter-spacing: -0.02em; }
-[data-testid="stSidebar"] { background: var(--paper); }
+[data-testid="stSidebar"] { background: var(--paper); border-right: 1px solid var(--line); }
 [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {
-  background: var(--paper); border-radius: 24px; padding: 10px; overflow: hidden;
+  background: var(--paper); border-radius: 24px; padding: 10px; overflow: hidden; border: 1px solid var(--line);
 }
 .stButton > button { border-radius: 999px !important; border: 1.5px solid var(--ink) !important;
   background: var(--ink) !important; color: var(--paper) !important; font-weight: 500; }
 .stButton > button:hover { background: var(--paper) !important; color: var(--ink) !important; }
 .bento { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 6px 0 16px; }
-.card { border-radius: 24px; padding: 16px 18px; background: var(--paper); color: var(--ink); min-width: 0; }
-.card.dark { background: var(--ink); color: var(--paper); }
+.card { border-radius: 24px; padding: 16px 18px; background: var(--paper); color: var(--ink); min-width: 0; border: 1px solid var(--line); }
+.card.lime { background: var(--lime); border-color: var(--lime); }
+.card.dark { background: var(--ink); color: #F4F1EA; border-color: var(--ink); }
 .card.wide { grid-column: span 2; }
 @media (max-width: 640px) { .card.wide { grid-column: span 1; } }
 .pill { display:inline-block; border:1.5px solid currentColor; border-radius:999px; padding:2px 12px;
@@ -158,7 +159,7 @@ def render_detail(r, key: str) -> None:
   <div class="card"><span class="pill">ขายที่เหลือ</span><div class="mid pos">{fmt(r['target2'])}</div><div class="lab">+{fmt(r['target2_pct'],1)}% · {r['target2_src']}</div></div>
   <div class="card"><span class="pill">ถือไม่เกิน</span><div class="mid">{r['hold_until']}</div><div class="lab">ไม่ถึงเป้า ขายที่ราคาปิดวันนั้น</div></div>
   <div class="card"><span class="pill">ขนาดไม้</span><div class="mid">{fmt(r['position_value'],0)}</div><div class="lab">{shares}ผิดทาง −{fmt(risk_b,0)} · ถูกทาง +{fmt(gain,0)} บาท</div></div>
-  <div class="card dark"><span class="pill">ย้อนหลัง 3 ปี</span><div class="mid">{bt_main}</div><div class="lab">{bt_sub}</div></div>
+  <div class="card lime"><span class="pill">ย้อนหลัง 3 ปี</span><div class="mid">{bt_main}</div><div class="lab">{bt_sub}</div></div>
   <div class="card"><span class="pill">คะแนน</span><div class="mid">{fmt(r.get('score'),0)}<span style="font-size:.9rem;opacity:.6">/100</span></div>
     <div class="lab">RS 3 เดือน {fmt(r.get('rs63'),1)}% · Vol {fmt(r['vol_ratio'],1)}x · ตลาด{r.get('regime','')}</div></div>
 </div>"""
@@ -166,7 +167,7 @@ def render_detail(r, key: str) -> None:
 
     mode = st.radio("รูปแบบกราฟ", ["เส้น", "แท่งเทียน"], horizontal=True, key=f"mode_{key}", label_visibility="collapsed")
     df = E.add_indicators(prices[r["yahoo"]]).iloc[-120:]
-    PAPER, INK, UP, DOWN, GRID = "#F3F1EA", "#111111", "#4F7F52", "#C2362B", "#E2DFD5"
+    PAPER, INK, UP, DOWN, GRID = "#FFFFFF", "#111111", "#3E7B45", "#C2362B", "#EEEBE3"
     from plotly.subplots import make_subplots
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
     if mode == "เส้น":
@@ -197,7 +198,7 @@ def render_detail(r, key: str) -> None:
     st.plotly_chart(fig, width="stretch", key=f"px_{key}", config={"displayModeBar": False})
 
     rsi_fig = go.Figure()
-    rsi_fig.add_hrect(y0=30, y1=50, fillcolor="#D8E64B", opacity=0.35, line_width=0)
+    rsi_fig.add_hrect(y0=30, y1=50, fillcolor="#D8E64B", opacity=0.45, line_width=0)
     rsi_fig.add_scatter(x=df.index, y=df["RSI"], line=dict(color=INK, width=2, shape="spline", smoothing=0.6))
     rsi_fig.add_scatter(x=[df.index[-1]], y=[df["RSI"].iloc[-1]], mode="markers", marker=dict(size=9, color=INK))
     rsi_fig.update_layout(height=150, showlegend=False, margin=dict(l=8, r=8, t=26, b=8), yaxis_range=[0, 100],
@@ -218,8 +219,8 @@ c = res["status"].value_counts()
 _ready = int(c.get("พร้อมเข้า", 0))
 _cards = [f'<div class="card dark wide"><span class="pill">วันนี้</span><div class="big">{_ready} ตัวพร้อมเข้า</div>'
           f'<div class="lab">ระวังงบ {int(c.get("ระวังงบ", 0))} · R:R ต่ำ {int(c.get("R:R ต่ำ", 0))} · ใกล้เข้า {int(c.get("ใกล้เข้า", 0))}</div></div>']
-for _k in ["ใกล้เข้า", "รอย่อ", "นอกแนวโน้ม"]:
-    _cards.append(f'<div class="card"><span class="pill">{_k}</span><div class="big">{int(c.get(_k, 0))}</div></div>')
+for _k, _cls in [("ใกล้เข้า", "lime"), ("รอย่อ", ""), ("นอกแนวโน้ม", "")]:
+    _cards.append(f'<div class="card {_cls}"><span class="pill">{_k}</span><div class="big">{int(c.get(_k, 0))}</div></div>')
 st.markdown('<div class="bento">' + "".join(_cards) + "</div>", unsafe_allow_html=True)
 
 REGIME_ICON = {"ขาขึ้น": "🟢", "ระวัง": "🟡", "ขาลง": "🔴", "ไม่ทราบ": "⚪"}
