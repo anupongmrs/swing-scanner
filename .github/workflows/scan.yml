@@ -1,0 +1,22 @@
+name: Swing scan
+
+on:
+  schedule:
+    - cron: "30 10 * * 1-5"   # 17:30 Bangkok, Mon-Fri (after SET close)
+    - cron: "0 1 * * 6"       # 08:00 Bangkok, Saturday (weekly full report)
+  workflow_dispatch:           # "Run workflow" button for a manual test
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yfinance pandas numpy
+      - name: Scan and post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          FULL_REPORT: ${{ github.event.schedule == '0 1 * * 6' && '1' || '0' }}
+        run: python notify.py
