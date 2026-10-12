@@ -27,9 +27,15 @@ def get_prices(tickers: tuple[str, ...]):
     return E.fetch_prices(list(tickers))
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_earnings(tickers: tuple[str, ...]):
+    w = pd.DataFrame({"yahoo": list(tickers)})
+    return E.fetch_earnings(w)
+
+
 STATUS_COLOR = {
     "พร้อมเข้า": "#d6f2df", "R:R ต่ำ": "#fbeccc", "ใกล้เข้า": "#fff5d6",
-    "รอย่อ": "#eef1f4", "นอกแนวโน้ม": "#f8dcd8", "ข้อมูลไม่พอ": "#eeeeee",
+    "ระวังงบ": "#f6d9ef", "รอย่อ": "#eef1f4", "นอกแนวโน้ม": "#f8dcd8", "ข้อมูลไม่พอ": "#eeeeee",
 }
 
 # ---------------------------------------------------------------- sidebar
@@ -41,6 +47,7 @@ with st.sidebar:
     s.atr_mult = st.number_input("Stop = ATR ×", min_value=0.5, max_value=4.0, value=float(s.atr_mult), step=0.25)
     s.min_rr = st.number_input("R:R ขั้นต่ำ", min_value=1.0, max_value=5.0, value=float(s.min_rr), step=0.5)
     s.resistance_lookback = st.number_input("หาแนวต้านย้อนหลัง (วัน)", min_value=20, max_value=250, value=int(s.resistance_lookback), step=10)
+    s.earnings_buffer = st.number_input("เตือนเมื่องบออกภายใน (วัน)", min_value=0, max_value=45, value=int(s.earnings_buffer), step=1)
     if st.button("บันทึกค่า", width="stretch"):
         s.save()
         st.success("บันทึกแล้ว")
@@ -53,6 +60,12 @@ watch = E.load_watchlist()
 with st.spinner(f"กำลังดึงราคา {len(watch)} ตัว จาก Yahoo Finance..."):
     prices = get_prices(tuple(watch["yahoo"]))
 res = E.scan(watch, s, prices)
+with st.spinner("กำลังหาวันประกาศงบ..."):
+    try:
+        earn = get_earnings(tuple(watch["yahoo"]))
+    except Exception:
+        earn = {}
+res = E.apply_earnings(res, earn, s)
 
 # ---------------------------------------------------------------- header
 st.title("Swing Scanner")
@@ -68,12 +81,9 @@ elif missing:
     st.warning("ดึงข้อมูลไม่ได้หรือข้อมูลสั้นเกินไป: " + ", ".join(missing) + " — ตรวจรหัส Yahoo ในแท็บรายชื่อหุ้น")
 
 c = res["status"].value_counts()
-m = st.columns(5)
-m[0].metric("พร้อมเข้า", int(c.get("พร้อมเข้า", 0)))
-m[1].metric("ใกล้เข้า", int(c.get("ใกล้เข้า", 0)))
-m[2].metric("R:R ต่ำ", int(c.get("R:R ต่ำ", 0)))
-m[3].metric("รอย่อ", int(c.get("รอย่อ", 0)))
-m[4].metric("นอกแนวโน้ม", int(c.get("นอกแนวโน้ม", 0)))
+m = st.columns(6)
+for i, k in enumerate(["พร้อมเข้า", "ระวังงบ", "ใกล้เข้า", "R:R ต่ำ", "รอย่อ", "นอกแนวโน้ม"]):
+    m[i].metric(k, int(c.get(k, 0)))
 
 tab_scan, tab_chart, tab_fund, tab_list, tab_help = st.tabs(
     ["สแกน", "กราฟรายตัว", "พื้นฐาน 5 เกณฑ์", "รายชื่อหุ้น", "วิธีอ่าน"])
@@ -106,6 +116,9 @@ with tab_scan:
         "ราคาเข้าสูงสุด": view.get("max_entry"),
         "ลงทุน (บาท)": view.get("position_value"),
         "จำนวนหุ้น": view.get("shares"),
+        "งบอีก (วัน)": view.get("earn_days"),
+        "วันงบ": view.get("earn_date"),
+        "ที่มาวันงบ": view.get("earn_src"),
         "หมายเหตุ": view["note"],
     })
 
@@ -116,10 +129,11 @@ with tab_scan:
         table.style.apply(paint, axis=1).format({
             "ราคา": "{:,.2f}", "% วันนี้": "{:+.2f}%", "RSI": "{:.0f}", "Stop": "{:,.2f}", "Stop %": "{:.1f}%",
             "เป้า": "{:,.2f}", "เป้า %": "{:+.1f}%", "R:R": "{:.2f}", "ราคาเข้าสูงสุด": "{:,.2f}",
-            "ลงทุน (บาท)": "{:,.0f}", "จำนวนหุ้น": "{:,.0f}"}, na_rep="–"),
+            "ลงทุน (บาท)": "{:,.0f}", "จำนวนหุ้น": "{:,.0f}", "งบอีก (วัน)": "{:.0f}"}, na_rep="–"),
         width="stretch", hide_index=True, height=min(38 * (len(table) + 1), 900))
     st.caption("หุ้น DR: ราคา stop และเป้าเป็นของหุ้นต้นทาง (USD/HKD/CNY) ให้ใช้ % ไปคำนวณกับราคา DR ในแอปโบรกเกอร์ · "
-               "\"ลงทุน (บาท)\" คือขนาดไม้ที่ทำให้ถ้าโดน stop จะขาดทุนเท่ากับความเสี่ยงต่อไม้พอดี")
+               "\"ลงทุน (บาท)\" คือขนาดไม้ที่ทำให้ถ้าโดน stop จะขาดทุนเท่ากับความเสี่ยงต่อไม้พอดี · "
+               "วันงบ \"ประมาณ (กฎ SET)\" คือช่วงสุดท้ายก่อนครบกำหนดส่งงบ ไม่ใช่วันประกาศจริง")
 
 # ---------------------------------------------------------------- chart
 with tab_chart:
@@ -159,7 +173,8 @@ with tab_chart:
             f"- เลื่อน stop มาที่ทุนเมื่อราคาถึง **{fmt(r['entry'] + (r['entry'] - r['stop']))}** (กำไร 1R)\n"
             f"- เป้า 2R: **{fmt(r['target_2r'])}** · แนวรับ 20 วัน: **{fmt(r['support20'])}**\n"
             f"- ราคาเข้าสูงสุดที่ยังได้ R:R {s.min_rr}: **{fmt(r['max_entry'])}**\n"
-            f"- Volume วันล่าสุด = {fmt(r['vol_ratio'], 1)} เท่าของค่าเฉลี่ย 20 วัน")
+            f"- Volume วันล่าสุด = {fmt(r['vol_ratio'], 1)} เท่าของค่าเฉลี่ย 20 วัน\n"
+            f"- วันประกาศงบ: **{r.get('earn_date') or '–'}** ({r.get('earn_src') or 'ไม่พบ'})")
 
 # ---------------------------------------------------------------- fundamentals
 with tab_fund:
@@ -226,6 +241,7 @@ with tab_help:
 
 **สถานะ**
 - **พร้อมเข้า**: ครบ 3 ข้อ และ R:R ถึงขั้นต่ำ
+- **ระวังงบ**: เข้าเงื่อนไข แต่จะประกาศงบภายในช่วงที่ตั้งไว้ (ค่าเริ่มต้น 14 วัน) ราคาอาจกระโดดข้าม stop ถ้าจะเข้า ให้ลดขนาดไม้ หรือรอหลังงบออก
 - **R:R ต่ำ**: ครบ 3 ข้อ แต่เป้าใกล้เกินไป ให้ตั้งซื้อที่ "ราคาเข้าสูงสุด"
 - **ใกล้เข้า**: ผ่าน 2 ข้อ เฝ้าดูพรุ่งนี้
 - **รอย่อ**: แนวโน้มดี แต่ราคายังไม่ย่อ

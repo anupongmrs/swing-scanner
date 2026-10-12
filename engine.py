@@ -33,6 +33,7 @@ class Settings:
     min_rr: float = 2.0               # minimum reward:risk to call it "ready"
     resistance_lookback: int = 60     # bars used to find the previous swing high
     lot: int = 100                    # board lot for Thai shares
+    earnings_buffer: int = 14         # days: flag a setup if earnings fall inside this window
 
     @classmethod
     def load(cls) -> "Settings":
@@ -117,7 +118,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------- signals + plan
-STATUS_ORDER = {"พร้อมเข้า": 0, "R:R ต่ำ": 1, "ใกล้เข้า": 2, "รอย่อ": 3, "นอกแนวโน้ม": 4, "ข้อมูลไม่พอ": 5}
+STATUS_ORDER = {"พร้อมเข้า": 0, "ระวังงบ": 1, "R:R ต่ำ": 2, "ใกล้เข้า": 3, "รอย่อ": 4, "นอกแนวโน้ม": 5, "ข้อมูลไม่พอ": 6}
 
 
 def analyze(df: pd.DataFrame, s: Settings) -> dict:
@@ -217,6 +218,96 @@ def scan(watch: pd.DataFrame, s: Settings, prices: dict[str, pd.DataFrame] | Non
     out["_o"] = out["status"].map(STATUS_ORDER).fillna(9)
     out = out.sort_values(["_o", "rr"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
     return out
+
+
+# ----------------------------------------------------------------- earnings dates
+EARN_CACHE = DATA / "earnings.json"
+
+
+def set_deadline_window(today=None) -> tuple:
+    """Next SET reporting window for Thai stocks when no announced date is known.
+    SET rules: quarterly statements within 45 days of quarter end; annual statements
+    within 2 months (companies not filing a separate Q4). Most firms report in the
+    last two weeks before the deadline, so the window is [deadline-14d, deadline]."""
+    import datetime as dt
+    today = today or dt.date.today()
+    cands = []
+    for y in (today.year - 1, today.year, today.year + 1):
+        for qe in (dt.date(y, 3, 31), dt.date(y, 6, 30), dt.date(y, 9, 30)):
+            cands.append(qe + dt.timedelta(days=45))
+        # annual: end of February of the following year
+        mar1 = dt.date(y + 1, 3, 1)
+        cands.append(mar1 - dt.timedelta(days=1))
+    deadline = min(d for d in cands if d >= today)
+    return deadline - dt.timedelta(days=14), deadline
+
+
+def fetch_earnings(watch: pd.DataFrame, max_age_hours: float = 12) -> dict[str, dict]:
+    """{yahoo_ticker: {"date": "YYYY-MM-DD", "source": "Yahoo" | "ประมาณ (กฎ SET)"}}"""
+    import datetime as dt
+    cache = {}
+    if EARN_CACHE.exists():
+        try:
+            cache = json.loads(EARN_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            cache = {}
+    now, today = time.time(), dt.date.today()
+    out = {}
+    for _, w in watch.iterrows():
+        t = w["yahoo"]
+        c = cache.get(t)
+        if c and now - c.get("_ts", 0) < max_age_hours * 3600:
+            out[t] = c
+            continue
+        found = None
+        try:
+            import yfinance as yf
+            cal = yf.Ticker(t).calendar or {}
+            dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
+            for d in (dates or []):
+                d = pd.Timestamp(d).date()
+                if d >= today - dt.timedelta(days=1):
+                    found = {"date": d.isoformat(), "source": "Yahoo"}
+                    break
+        except Exception:
+            pass
+        if found is None and str(t).upper().endswith(".BK"):
+            start, end = set_deadline_window(today)
+            found = {"date": start.isoformat(), "end": end.isoformat(), "source": "ประมาณ (กฎ SET)"}
+        found = (found or {"date": None, "source": "ไม่พบ"}) | {"_ts": now}
+        cache[t] = found
+        out[t] = found
+    try:
+        EARN_CACHE.write_text(json.dumps(cache, indent=1, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return out
+
+
+def apply_earnings(res: pd.DataFrame, earn: dict[str, dict], s: Settings) -> pd.DataFrame:
+    import datetime as dt
+    today = dt.date.today()
+    days, src, edate = [], [], []
+    for _, r in res.iterrows():
+        e = earn.get(r["yahoo"], {})
+        d = e.get("date")
+        if d:
+            n = (dt.date.fromisoformat(d) - today).days
+            end = e.get("end")
+            if end and n < 0 <= (dt.date.fromisoformat(end) - today).days:
+                n = 0  # inside the estimated window
+            days.append(max(n, 0)); edate.append(d if not end else f"{d} – {end}")
+        else:
+            days.append(float("nan")); edate.append("")
+        src.append(e.get("source", ""))
+    res = res.copy()
+    res["earn_days"] = days
+    res["earn_date"] = edate
+    res["earn_src"] = src
+    near = res["earn_days"].le(s.earnings_buffer)
+    res.loc[near & res["status"].isin(["พร้อมเข้า", "R:R ต่ำ"]), "status"] = "ระวังงบ"
+    res["_o"] = res["status"].map(STATUS_ORDER).fillna(9)
+    return res.sort_values(["_o", "rr"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
 
 
 # ----------------------------------------------------------------- fundamentals (criteria 1-4 auto, 5 manual)
