@@ -168,7 +168,10 @@ def render_detail(r, key: str) -> None:
                 f'{r["symbol"]}</span> <span style="font-size:1.15rem;opacity:.75">{full}</span><br>'
                 f'<span class="pill">{r["group"]}</span>'
                 + (f'<span class="pill">{sector_bits}</span>' if sector_bits else "")
-                + f'<span class="pill">{r["market"]} · {r["yahoo"]}</span></div>', unsafe_allow_html=True)
+                + f'<span class="pill">ราคาเป็น {r.get("currency", "")} · {r["yahoo"]}</span>'
+                + (f'<span class="pill solid">DR ในไทย: {r["dr"]}</span>' if r.get("dr")
+                   else ('<span class="pill">หุ้นไทย</span>' if r["market"] == "TH" else '<span class="pill">ไม่พบ DR ในไทย</span>'))
+                + '</div>', unsafe_allow_html=True)
     risk_b = r["position_value"] * (r["entry"] - r["stop"]) / r["entry"] if r["entry"] else float("nan")
     gain = r["position_value"] * 0.5 * (r["target"] / r["entry"] - 1) + r["position_value"] * 0.5 * (r["target2"] / r["entry"] - 1)
     has_bt = bool(r.get("bt_n", 0))
@@ -184,7 +187,7 @@ def render_detail(r, key: str) -> None:
     <div class="big"><span class="pos">+{fmt(r['target2_pct'],1)}%</span> <span style="opacity:.45">/</span> <span class="neg">{fmt(r['stop_pct'],1)}%</span></div>
     <div class="lab">เป้าขายที่เหลือ / คัดลอส · R:R {fmt(r['rr'])} (ขายครึ่ง/ครึ่ง)</div>
   </div>
-  <div class="card"><span class="pill">ซื้อที่</span><div class="mid">{fmt(r['buy_price'])}</div><div class="lab">ราคาล่าสุด {fmt(r['close'])}</div></div>
+  <div class="card"><span class="pill">ซื้อที่ ({r.get('currency','')})</span><div class="mid">{fmt(r['buy_price'])}</div><div class="lab">ราคาล่าสุด {fmt(r['close'])}</div></div>
   <div class="card"><span class="pill">คัดลอส</span><div class="mid neg">{fmt(r['stop'])}</div><div class="lab">{fmt(r['stop_pct'],1)}% · {r['stop_src']}</div></div>
   <div class="card"><span class="pill">ขายครึ่งแรก</span><div class="mid pos">{fmt(r['target'])}</div><div class="lab">+{fmt(r['target_pct'],1)}% · {r['target_src']} · แล้วเลื่อนคัดลอสมาที่ทุน</div></div>
   <div class="card"><span class="pill">ขายที่เหลือ</span><div class="mid pos">{fmt(r['target2'])}</div><div class="lab">+{fmt(r['target2_pct'],1)}% · {r['target2_src']}</div></div>
@@ -239,6 +242,9 @@ def render_detail(r, key: str) -> None:
     rsi_fig.update_yaxes(gridcolor=GRID, side="right", tickvals=[30, 50, 70])
     st.plotly_chart(rsi_fig, width="stretch", key=f"rsi_{key}", config={"displayModeBar": False})
 
+    if r.get("young") is True:
+        st.info(f"หุ้นเข้าตลาดใหม่ มีข้อมูลราคาเพียง {r.get('bars', 0):.0f} วัน (ต้องการ 210 วันสำหรับ EMA200) "
+                "จึงใช้เงื่อนไข 'ราคาเหนือ EMA50 ที่กำลังชี้ขึ้น' แทน และยังทดสอบย้อนหลังไม่ได้ หุ้นใหม่มักผันผวนสูง ควรลดขนาดไม้")
     st.caption(
         f"เงื่อนไข {r['checks']}/3: แนวโน้ม {'✓' if r['trend'] else '–'} · ย่อถึง EMA20 {'✓' if r['pullback'] else '–'} · "
         f"RSI หักหัวขึ้น {'✓' if r['rsi_turn'] else '–'} · ATR {fmt(r['atr'])} ({fmt(r['atr_pct'], 1)}%/วัน) · "
@@ -328,7 +334,8 @@ with tab_scan:
     with st.expander("ตัวกรอง", expanded=True):
         f1, f2, f3 = st.columns([1.2, 1, 2])
         q = f1.text_input("ค้นหาหุ้น", placeholder="เช่น NVDA, PTT", key="f_q")
-        mk = f2.radio("ตลาด", ["ทั้งหมด", "TH", "DR"], horizontal=True, key="f_mk")
+        mk = f2.radio("ตลาด", ["ทั้งหมด", "TH", "DR"], horizontal=True, key="f_mk",
+                      format_func=lambda x: {"TH": "หุ้นไทย", "DR": "ต่างประเทศ"}.get(x, x))
         default_st = ["พร้อมเข้า", "ระวังงบ", "R:R ต่ำ", "ใกล้เข้า", "รอย่อ"]
         only = f3.multiselect("สถานะ", list(E.STATUS_ORDER), default=default_st, key="f_st",
                               help="ค่าเริ่มต้นซ่อน 'นอกแนวโน้ม' เพราะไม่ใช่จังหวะเล่นสวิง")
@@ -346,6 +353,8 @@ with tab_scan:
                             help="ตัวที่ยังไม่เคยเกิดสัญญาณย้อนหลังจะถูกซ่อนเมื่อเลื่อนค่านี้มากกว่า 0")
         with h4:
             pos_r = st.toggle("ย้อนหลังต้องได้กำไรเฉลี่ย", key="f_posr", help="เฉลี่ย R มากกว่า 0 และมีอย่างน้อย 3 ไม้")
+            only_dr = st.toggle("ต่างประเทศ: เฉพาะที่มี DR ในไทย", key="f_dr",
+                                help="ซ่อนหุ้นต่างประเทศที่ยังไม่พบ DR ซื้อขายในตลาดหลักทรัพย์ไทย")
             no_earn = st.toggle("ซ่อนตัวที่งบออกระหว่างถือ", key="f_earn",
                                 help=f"ซ่อนตัวที่งบออกภายใน {s.hold_days} วันทำการ (≈ ระยะที่ถือ)")
 
@@ -367,6 +376,8 @@ with tab_scan:
         view = view[view["bt_win"].fillna(-1) >= min_win]
     if pos_r:
         view = view[(view["bt_avg_r"].fillna(-1) > 0) & (view["bt_n"].fillna(0) >= 3)]
+    if only_dr:
+        view = view[(view["market"] == "TH") | (view["dr"].fillna("").str.len() > 0)]
     if no_earn:
         view = view[~(view["earn_days"] <= s.hold_days * 7 / 5)]
     sort_map = {"คะแนน": ("score", False), "R:R": ("rr", False), "RS 3 เดือน": ("rs63", False),
@@ -384,6 +395,9 @@ with tab_scan:
         "หุ้น": view["symbol"],
         "กลุ่ม": view["group"],
         "ต้องทำอะไร": view.get("action"),
+        "สกุลเงิน": view.get("currency"),
+        "DR ในไทย": view.apply(lambda x: "หุ้นไทย" if x["market"] == "TH" else (x.get("dr") or "ไม่พบ DR"), axis=1)
+                    if len(view) else pd.Series(dtype=object),
         "ราคา": view.get("close"),
         "ซื้อที่": view.get("buy_price"),
         "คัดลอส": view.get("stop"),
@@ -440,7 +454,9 @@ with tab_scan:
             "RS 3 เดือน": "{:+.1f}%", "Vol เทียบเฉลี่ย": "{:.1f}x"}, na_rep="–"),
         width="stretch", hide_index=True, height=min(38 * (len(table) + 1), 900),
         on_select="rerun", selection_mode="single-row", key="scan_tbl", column_config=col_cfg)
-    st.caption("หุ้น DR: ราคาทั้งหมดเป็นของหุ้นต้นทาง (USD/HKD/CNY) ให้ใช้ช่อง % ไปคิดกับราคา DR ในแอปโบรกเกอร์ · "
+    st.caption("ราคา/ซื้อที่/คัดลอส/เป้า เป็นสกุลเงินของตลาดต้นทางตามช่อง \"สกุลเงิน\" (หุ้นไทย = บาท) · "
+               "จะซื้อผ่าน DR ในไทย ให้ใช้ช่อง % ไปคำนวณกับราคา DR ในแอปโบรกเกอร์ เพราะราคา DR เป็นบาทและขึ้นกับอัตราแลกเปลี่ยน · "
+               "\"ไม่พบ DR\" คือไม่พบในรายชื่อ DR ที่ตรวจล่าสุด อาจมีออกใหม่ได้ · "
                "\"ลงทุน (บาท)\" คือขนาดไม้ที่ถ้าโดนคัดลอสจะเสียเท่ากับความเสี่ยงต่อไม้ (ปรับตามภาวะตลาดแล้ว) · "
                "\"ย้อนหลัง\" คือผลถ้าใช้กฎชุดนี้กับหุ้นตัวนั้นใน 3 ปีที่ผ่านมา ไม้น้อยกว่า 5 ไม้ถือว่ายังสรุปไม่ได้")
     rows = event.selection.rows if event is not None else []
@@ -511,7 +527,7 @@ with tab_list:
     ed = st.data_editor(watch, num_rows="dynamic", width="stretch", key="wl",
                         column_config={"symbol": "ชื่อย่อ", "yahoo": "รหัส Yahoo",
                                        "market": st.column_config.SelectboxColumn("ตลาด", options=["TH", "DR"]),
-                                       "group": "กลุ่ม", "note": "หมายเหตุ"})
+                                       "group": "กลุ่ม", "dr": "DR ในไทย", "note": "หมายเหตุ"})
     if st.button("บันทึกรายชื่อ"):
         E.save_watchlist(ed)
         get_prices.clear()

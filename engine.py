@@ -54,13 +54,15 @@ def load_watchlist() -> pd.DataFrame:
     df = pd.read_csv(BASE / "watchlist.csv", dtype=str, encoding="utf-8").fillna("")
     df["symbol"] = df["symbol"].str.strip().str.upper()
     df["yahoo"] = df["yahoo"].str.strip()
+    if "dr" not in df:
+        df["dr"] = ""
     df = df[df["symbol"] != ""]
     df.loc[df["yahoo"] == "", "yahoo"] = df["symbol"]
     return df.reset_index(drop=True)
 
 
 def save_watchlist(df: pd.DataFrame) -> None:
-    cols = ["symbol", "yahoo", "market", "group", "note"]
+    cols = ["symbol", "yahoo", "market", "group", "dr", "note"]
     df = df.reindex(columns=cols).fillna("")
     df.to_csv(BASE / "watchlist.csv", index=False, encoding="utf-8")
 
@@ -226,14 +228,19 @@ def backtest(df: pd.DataFrame, s: Settings, return_trades: bool = False) -> dict
 
 
 def analyze(df: pd.DataFrame, s: Settings) -> dict:
-    if len(df) < 210:
+    if len(df) < 60:
         return {"status": "ข้อมูลไม่พอ"}
+    young = len(df) < 210  # recent IPO: EMA200 is not meaningful yet
     d = add_indicators(df)
     last, prev = d.iloc[-1], d.iloc[-2]
     close, a = float(last["Close"]), float(last["ATR"])
     e20, e50, e200 = float(last["EMA20"]), float(last["EMA50"]), float(last["EMA200"])
 
-    trend = close > e50 > e200
+    if young:
+        # not enough history for EMA200: require price above a rising EMA50 instead
+        trend = close > e50 and e50 > float(d["EMA50"].iloc[-11])
+    else:
+        trend = close > e50 > e200
     low3 = float(d["Low"].iloc[-3:].min())
     pullback = (low3 <= e20 + 0.25 * a) and close >= e50
     rsi_min5 = float(d["RSI"].iloc[-5:].min())
@@ -275,6 +282,8 @@ def analyze(df: pd.DataFrame, s: Settings) -> dict:
     return {
         "status": status,
         "checks": checks,
+        "young": young,
+        "bars": len(df),
         "trend": trend,
         "pullback": pullback,
         "rsi_turn": rsi_turn,
@@ -321,6 +330,14 @@ def shares_for(row: dict, s: Settings) -> float:
 
 
 INDEX_NAMES = {"^SET.BI": "SET", "^IXIC": "Nasdaq", "^HSI": "Hang Seng", "000300.SS": "CSI 300", "^N225": "Nikkei"}
+
+
+def currency_for(yahoo: str) -> str:
+    y = str(yahoo).upper()
+    for suf, cur in ((".BK", "THB"), (".HK", "HKD"), (".SZ", "CNY"), (".SS", "CNY"), (".T", "JPY")):
+        if y.endswith(suf):
+            return cur
+    return "USD"
 
 
 def index_for(yahoo: str) -> str:
@@ -391,7 +408,8 @@ def scan(watch: pd.DataFrame, s: Settings, prices: dict[str, pd.DataFrame] | Non
         df = prices.get(w["yahoo"])
         r = analyze(df, s) if df is not None else {"status": "ข้อมูลไม่พอ"}
         r.update({"symbol": w["symbol"], "yahoo": w["yahoo"], "market": w["market"],
-                  "group": w["group"], "note": w["note"]})
+                  "group": w["group"], "note": w["note"], "dr": w.get("dr", ""),
+                  "currency": currency_for(w["yahoo"])})
         ix = index_for(w["yahoo"])
         g = reg.get(ix, {"state": "ไม่ทราบ", "mult": 1.0})
         r["index"] = INDEX_NAMES.get(ix, ix)
@@ -462,6 +480,9 @@ def add_actions(res: pd.DataFrame, s: Settings) -> pd.DataFrame:
             buy = float("nan")
             acts.append("ไม่มีข้อมูล")
         buys.append(buy)
+    if "young" in res:
+        acts = [a + (" · หุ้นใหม่ ข้อมูลสั้น" if y is True and a not in ("ข้าม", "ไม่มีข้อมูล") else "")
+                for a, y in zip(acts, res["young"])]
     res = res.copy()
     res["action"] = acts
     res["buy_price"] = buys
