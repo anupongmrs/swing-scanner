@@ -331,7 +331,7 @@ tab_scan, tab_chart, tab_fund, tab_list, tab_help = st.tabs(
 # ---------------------------------------------------------------- scan table
 with tab_scan:
     base = res[res["status"] != "ข้อมูลไม่พอ"]
-    with st.expander("ตัวกรอง", expanded=True):
+    with st.expander("ตัวกรอง (กดเพื่อเปิด)", expanded=False):
         f1, f2, f3 = st.columns([1.2, 1, 2])
         q = f1.text_input("ค้นหาหุ้น", placeholder="เช่น NVDA, PTT", key="f_q")
         mk = f2.radio("ตลาด", ["ทั้งหมด", "TH", "DR"], horizontal=True, key="f_mk",
