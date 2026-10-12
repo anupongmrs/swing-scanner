@@ -68,6 +68,27 @@ def get_prices(tickers: tuple[str, ...]):
     return E.fetch_prices(list(tickers))
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_profile(yahoo: str) -> dict:
+    return E.company_profile(yahoo)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_news(yahoo: str) -> list:
+    return E.company_news(yahoo)
+
+
+def big_num(x, cur=""):
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return "–"
+    for div, suf in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if abs(x) >= div:
+            return f"{x / div:,.1f}{suf} {cur}".strip()
+    return f"{x:,.0f} {cur}".strip()
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def get_earnings(tickers: tuple[str, ...]):
     w = pd.DataFrame({"yahoo": list(tickers)})
@@ -140,6 +161,14 @@ elif missing:
     st.warning("ดึงข้อมูลไม่ได้หรือข้อมูลสั้นเกินไป: " + ", ".join(missing) + " — ตรวจรหัส Yahoo ในแท็บรายชื่อหุ้น")
 
 def render_detail(r, key: str) -> None:
+    prof = get_profile(r["yahoo"])
+    full = prof.get("longName") or prof.get("shortName") or r["symbol"]
+    sector_bits = " · ".join(x for x in [prof.get("sector"), prof.get("industry"), prof.get("country")] if x)
+    st.markdown(f'<div style="margin:.4rem 0 .2rem"><span style="font-size:1.9rem;font-weight:600;letter-spacing:-.02em">'
+                f'{r["symbol"]}</span> <span style="font-size:1.15rem;opacity:.75">{full}</span><br>'
+                f'<span class="pill">{r["group"]}</span>'
+                + (f'<span class="pill">{sector_bits}</span>' if sector_bits else "")
+                + f'<span class="pill">{r["market"]} · {r["yahoo"]}</span></div>', unsafe_allow_html=True)
     risk_b = r["position_value"] * (r["entry"] - r["stop"]) / r["entry"] if r["entry"] else float("nan")
     gain = r["position_value"] * 0.5 * (r["target"] / r["entry"] - 1) + r["position_value"] * 0.5 * (r["target2"] / r["entry"] - 1)
     has_bt = bool(r.get("bt_n", 0))
@@ -216,6 +245,52 @@ def render_detail(r, key: str) -> None:
         f"แนวต้าน {fmt(r['resistance'])} · ราคาเข้าสูงสุดที่ยังได้ R:R {s.min_rr:g}: {fmt(r['max_entry'])} · "
         f"งบ: {r.get('earn_date') or '–'} ({r.get('earn_src') or 'ไม่พบ'})")
 
+    # ---- company profile, peers and news
+    st.markdown("### ข้อมูลบริษัท")
+    cur = prof.get("currency") or ""
+    rec = {"strong_buy": "ซื้อมาก", "buy": "ซื้อ", "hold": "ถือ", "underperform": "ต่ำกว่าตลาด", "sell": "ขาย"}.get(prof.get("recommendationKey") or "", "–")
+    tgt = prof.get("targetMeanPrice")
+    facts = [
+        ("มูลค่าบริษัท", big_num(prof.get("marketCap"), cur)),
+        ("P/E ย้อนหลัง / ล่วงหน้า", f"{fmt(prof.get('trailingPE'),1)} / {fmt(prof.get('forwardPE'),1)}"),
+        ("กรอบราคา 52 สัปดาห์", f"{fmt(prof.get('fiftyTwoWeekLow'))} – {fmt(prof.get('fiftyTwoWeekHigh'))}"),
+        ("นักวิเคราะห์", f"{rec} · เป้าเฉลี่ย {fmt(tgt)}" + (f" ({prof.get('numberOfAnalystOpinions')} ราย)" if prof.get('numberOfAnalystOpinions') else "")),
+        ("พนักงาน", f"{prof['fullTimeEmployees']:,}" if prof.get("fullTimeEmployees") else "–"),
+    ]
+    st.markdown('<div class="bento">' + "".join(
+        f'<div class="card"><span class="pill">{k}</span><div class="mid" style="font-size:1.1rem">{v}</div></div>' for k, v in facts)
+        + "</div>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.markdown("**บริษัททำอะไร**")
+        summ = prof.get("longBusinessSummary")
+        if summ:
+            st.write(summ if len(summ) < 1200 else summ[:1200].rsplit(". ", 1)[0] + ".")
+            st.caption("คำอธิบายจาก Yahoo Finance (ภาษาอังกฤษ)" + (f" · {prof['website']}" if prof.get("website") else ""))
+        else:
+            st.caption("Yahoo ไม่มีคำอธิบายบริษัทนี้")
+    with c2:
+        st.markdown("**หุ้นกลุ่มเดียวกันในลิสต์ (คู่เทียบ)**")
+        peers = res[(res["group"] == r["group"]) & (res["symbol"] != r["symbol"])]
+        if len(peers):
+            st.dataframe(pd.DataFrame({"หุ้น": peers["symbol"], "สถานะ": peers["status"],
+                                       "RS 3 เดือน": peers["rs63"].map(lambda v: f"{v:+.1f}%" if v == v else "–"),
+                                       "คะแนน": peers["score"].map(lambda v: f"{v:.0f}" if v == v else "–")}),
+                         hide_index=True, width="stretch", height=min(36 * (len(peers) + 1), 300))
+        else:
+            st.caption("ยังไม่มีหุ้นกลุ่มเดียวกันในลิสต์")
+
+    st.markdown("**ข่าวล่าสุด**")
+    news = get_news(r["yahoo"])
+    if news:
+        for n in news:
+            title = f"[{n['title']}]({n['url']})" if n.get("url") else n["title"]
+            st.markdown(f"- {title}  \n  <span style='opacity:.65;font-size:.8rem'>{n['publisher']} · {n['date']}</span>",
+                        unsafe_allow_html=True)
+    else:
+        st.caption("Yahoo ไม่มีข่าวของหุ้นนี้ (หุ้นไทยมักมีข่าวน้อย ดูประกาศบริษัทเพิ่มเติมที่ set.or.th)")
+
 
 c = res["status"].value_counts()
 _ready = int(c.get("พร้อมเข้า", 0))
@@ -237,6 +312,10 @@ for ix in [i for i in E.INDEX_NAMES if i in used]:
         parts.append(f"{REGIME_ICON[g['state']]} **{g['name']}** {g['state']} "
                      f"(3 เดือน {g['ret63']:+.1f}% · ขนาดไม้ ×{g['mult']:g})")
 st.markdown('<div class="card"><span class="pill solid">ภาวะตลาด</span> ' + " ".join(f'<span class="pill">{p_}</span>' for p_ in parts).replace("**", "") + "</div><br>", unsafe_allow_html=True)
+_px = [g for ix, g in reg.items() if ix in used and g.get("proxy")]
+if _px:
+    st.caption("* ดึงดัชนีจาก Yahoo ไม่ได้ ใช้ค่าเฉลี่ยของหุ้นในลิสต์แทน: "
+               + ", ".join(f"{g['name'].rstrip('*')} จาก {g['proxy']} ตัว" for g in _px))
 if any(reg.get(ix, {}).get("state") == "ขาลง" for ix in used):
     st.caption("ตลาดขาลงอยู่ใต้ EMA200: สัญญาณซื้อล้มเหลวบ่อยขึ้น ระบบลดขนาดไม้ที่แนะนำเหลือ 25% ของปกติ")
 

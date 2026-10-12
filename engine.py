@@ -27,8 +27,8 @@ DATA.mkdir(exist_ok=True)
 # ----------------------------------------------------------------- settings
 @dataclass
 class Settings:
-    portfolio: float = 2_000_000      # THB
-    risk_pct: float = 1.0             # % of portfolio risked per trade
+    portfolio: float = 500_000        # THB
+    risk_pct: float = 2.0             # % of portfolio risked per trade
     atr_mult: float = 2.0             # stop distance in ATRs
     min_rr: float = 2.0               # minimum reward:risk to call it "ready"
     resistance_lookback: int = 60     # bars used to find the previous swing high
@@ -374,6 +374,18 @@ def scan(watch: pd.DataFrame, s: Settings, prices: dict[str, pd.DataFrame] | Non
     if prices is None:
         prices = fetch_prices(watch["yahoo"].tolist() + list(INDEX_NAMES))
     reg = regimes(prices)
+    # fallback when Yahoo does not return an index: equal-weight average of the listed stocks in that market
+    for ix, g in reg.items():
+        if g["state"] != "ไม่ทราบ":
+            continue
+        members = [prices[y] for y in watch["yahoo"] if index_for(y) == ix and y in prices]
+        if len(members) < 5:
+            continue
+        closes = pd.concat([m["Close"] / m["Close"].dropna().iloc[0] for m in members], axis=1).ffill()
+        proxy = pd.DataFrame({"Close": closes.mean(axis=1).dropna()})
+        p_ = market_regime(proxy)
+        if p_["state"] != "ไม่ทราบ":
+            reg[ix] = p_ | {"name": f"{INDEX_NAMES[ix]}*", "proxy": len(members)}
     rows = []
     for _, w in watch.iterrows():
         df = prices.get(w["yahoo"])
@@ -627,3 +639,41 @@ def load_manual_gap() -> dict[str, float]:
         return {}
     df = pd.read_csv(p, dtype={"symbol": str}).dropna(subset=["gap_pts"])
     return dict(zip(df["symbol"].str.upper(), df["gap_pts"].astype(float)))
+
+
+# ----------------------------------------------------------------- company profile + news
+def company_profile(yahoo: str) -> dict:
+    import yfinance as yf
+    try:
+        info = yf.Ticker(yahoo).info or {}
+    except Exception:
+        info = {}
+    keys = ["longName", "shortName", "sector", "industry", "country", "website", "fullTimeEmployees",
+            "marketCap", "currency", "longBusinessSummary", "trailingPE", "forwardPE", "dividendYield",
+            "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "recommendationKey", "targetMeanPrice", "numberOfAnalystOpinions"]
+    return {k: info.get(k) for k in keys}
+
+
+def company_news(yahoo: str, limit: int = 10) -> list[dict]:
+    """Latest headlines from Yahoo Finance. Handles both the old flat and the newer nested news format."""
+    import yfinance as yf
+    try:
+        raw = yf.Ticker(yahoo).news or []
+    except Exception:
+        raw = []
+    out = []
+    for n in raw:
+        c = n.get("content", n) if isinstance(n, dict) else {}
+        title = c.get("title")
+        if not title:
+            continue
+        url = (c.get("canonicalUrl") or {}).get("url") or (c.get("clickThroughUrl") or {}).get("url") or c.get("link")
+        pub = (c.get("provider") or {}).get("displayName") or c.get("publisher") or ""
+        when = c.get("pubDate") or c.get("displayTime")
+        if not when and c.get("providerPublishTime"):
+            when = pd.Timestamp(c["providerPublishTime"], unit="s").isoformat()
+        out.append({"title": title, "url": url, "publisher": pub,
+                    "date": str(when)[:10] if when else "", "summary": c.get("summary") or ""})
+        if len(out) >= limit:
+            break
+    return out
