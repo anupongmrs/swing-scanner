@@ -18,18 +18,20 @@ st.set_page_config(page_title="Swing Scanner", page_icon="📈", layout="wide")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Anuphan:wght@300;400;500;600;700&display=swap');
 html, body, [class*="css"], .stApp, .stMarkdown, button, input, textarea, select, label,
 [data-testid="stMetricValue"], [data-testid="stMetricLabel"], [data-testid="stSidebar"] * {
-  font-family: 'Poppins', 'Prompt', sans-serif !important;
+  font-family: 'Poppins', 'Anuphan', sans-serif !important;
 }
 :root { --ink:#111111; --paper:#FFFFFF; --cream:#F4F1EA; --lime:#D8E64B; --up:#3E7B45; --down:#C2362B; --line:#E4E0D6; }
 h1 { font-weight: 600 !important; letter-spacing: -0.03em; font-size: 2.6rem !important; }
 h2, h3 { font-weight: 600 !important; letter-spacing: -0.02em; }
 [data-testid="stSidebar"] { background: var(--paper); border-right: 1px solid var(--line); }
-[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {
+[data-testid="stPlotlyChart"] {
   background: var(--paper); border-radius: 24px; padding: 10px; overflow: hidden; border: 1px solid var(--line);
 }
+/* tables: rounded frame but no clipping, so the horizontal scrollbar stays visible */
+[data-testid="stDataFrame"] { background: var(--paper); border-radius: 16px; border: 1px solid var(--line); padding: 2px; }
 .stButton > button { border-radius: 999px !important; border: 1.5px solid var(--ink) !important;
   background: var(--ink) !important; color: var(--paper) !important; font-weight: 500; }
 .stButton > button:hover { background: var(--paper) !important; color: var(--ink) !important; }
@@ -191,7 +193,7 @@ def render_detail(r, key: str) -> None:
     fig.add_bar(x=df.index, y=df["Volume"], marker_color=vcol, marker_line_width=0, name="Volume", row=2, col=1)
     fig.update_layout(height=560, showlegend=False, margin=dict(l=8, r=8, t=8, b=8), bargap=0.35,
                       paper_bgcolor=PAPER, plot_bgcolor=PAPER, xaxis_rangeslider_visible=False,
-                      font=dict(family="Poppins, Prompt, sans-serif", color=INK, size=12), hovermode="x unified")
+                      font=dict(family="Poppins, Anuphan, sans-serif", color=INK, size=12), hovermode="x unified")
     fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])], showline=False, ticks="")
     fig.update_yaxes(gridcolor=GRID, zeroline=False, side="right")
     fig.update_yaxes(showgrid=False, showticklabels=False, row=2, col=1)
@@ -202,7 +204,7 @@ def render_detail(r, key: str) -> None:
     rsi_fig.add_scatter(x=df.index, y=df["RSI"], line=dict(color=INK, width=2, shape="spline", smoothing=0.6))
     rsi_fig.add_scatter(x=[df.index[-1]], y=[df["RSI"].iloc[-1]], mode="markers", marker=dict(size=9, color=INK))
     rsi_fig.update_layout(height=150, showlegend=False, margin=dict(l=8, r=8, t=26, b=8), yaxis_range=[0, 100],
-                          paper_bgcolor=PAPER, plot_bgcolor=PAPER, font=dict(family="Poppins, Prompt, sans-serif", color=INK),
+                          paper_bgcolor=PAPER, plot_bgcolor=PAPER, font=dict(family="Poppins, Anuphan, sans-serif", color=INK),
                           title=dict(text=f"RSI {fmt(r['rsi'],0)} · โซนย่อ 30–50", font=dict(size=12), x=0.01, y=0.95))
     rsi_fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])])
     rsi_fig.update_yaxes(gridcolor=GRID, side="right", tickvals=[30, 50, 70])
@@ -243,18 +245,65 @@ tab_scan, tab_chart, tab_fund, tab_list, tab_help = st.tabs(
 
 # ---------------------------------------------------------------- scan table
 with tab_scan:
-    f1, f2 = st.columns([2, 3])
-    mk = f1.radio("ตลาด", ["ทั้งหมด", "TH", "DR"], horizontal=True)
-    only = f2.multiselect("สถานะ", list(E.STATUS_ORDER), default=[k for k in E.STATUS_ORDER if k != "ข้อมูลไม่พอ"])
+    base = res[res["status"] != "ข้อมูลไม่พอ"]
+    with st.expander("ตัวกรอง", expanded=True):
+        f1, f2, f3 = st.columns([1.2, 1, 2])
+        q = f1.text_input("ค้นหาหุ้น", placeholder="เช่น NVDA, PTT", key="f_q")
+        mk = f2.radio("ตลาด", ["ทั้งหมด", "TH", "DR"], horizontal=True, key="f_mk")
+        default_st = ["พร้อมเข้า", "ระวังงบ", "R:R ต่ำ", "ใกล้เข้า", "รอย่อ"]
+        only = f3.multiselect("สถานะ", list(E.STATUS_ORDER), default=default_st, key="f_st",
+                              help="ค่าเริ่มต้นซ่อน 'นอกแนวโน้ม' เพราะไม่ใช่จังหวะเล่นสวิง")
+        g1, g2, g3 = st.columns([2, 1.2, 1.2])
+        sectors = sorted(base["group"].dropna().unique())
+        sec = g1.multiselect("กลุ่มอุตสาหกรรม", sectors, placeholder="ทุกกลุ่ม", key="f_sec")
+        regs = g2.multiselect("ภาวะตลาด", ["ขาขึ้น", "ระวัง", "ขาลง"], placeholder="ทุกภาวะ", key="f_reg",
+                              help="ภาวะของดัชนีที่หุ้นตัวนั้นอยู่ เช่น หุ้นไทยดู SET หุ้นสหรัฐดู Nasdaq")
+        sort_by = g3.selectbox("เรียงตาม", ["แนะนำ (สถานะ แล้วคะแนน)", "คะแนน", "R:R", "RS 3 เดือน",
+                                            "ย้อนหลัง เฉลี่ย R", "ย้อนหลัง ชนะ %", "งบใกล้สุด"], key="f_sort")
+        h1, h2, h3, h4 = st.columns(4)
+        min_score = h1.slider("คะแนนขั้นต่ำ", 0, 100, 0, 5, key="f_score")
+        min_rr = h2.slider("R:R ขั้นต่ำ", 0.0, 4.0, 0.0, 0.25, key="f_rr")
+        min_win = h3.slider("ย้อนหลังชนะขั้นต่ำ (%)", 0, 100, 0, 5, key="f_win",
+                            help="ตัวที่ยังไม่เคยเกิดสัญญาณย้อนหลังจะถูกซ่อนเมื่อเลื่อนค่านี้มากกว่า 0")
+        with h4:
+            pos_r = st.toggle("ย้อนหลังต้องได้กำไรเฉลี่ย", key="f_posr", help="เฉลี่ย R มากกว่า 0 และมีอย่างน้อย 3 ไม้")
+            no_earn = st.toggle("ซ่อนตัวที่งบออกระหว่างถือ", key="f_earn",
+                                help=f"ซ่อนตัวที่งบออกภายใน {s.hold_days} วันทำการ (≈ ระยะที่ถือ)")
+
     view = res[res["status"].isin(only)]
     if mk != "ทั้งหมด":
         view = view[view["market"] == mk]
+    if q.strip():
+        keys = [k.strip().upper() for k in q.replace(",", " ").split() if k.strip()]
+        view = view[view["symbol"].str.upper().apply(lambda x: any(k in x for k in keys))]
+    if sec:
+        view = view[view["group"].isin(sec)]
+    if regs:
+        view = view[view["regime"].isin(regs)]
+    if min_score:
+        view = view[view["score"].fillna(0) >= min_score]
+    if min_rr:
+        view = view[view["rr"].fillna(0) >= min_rr]
+    if min_win:
+        view = view[view["bt_win"].fillna(-1) >= min_win]
+    if pos_r:
+        view = view[(view["bt_avg_r"].fillna(-1) > 0) & (view["bt_n"].fillna(0) >= 3)]
+    if no_earn:
+        view = view[~(view["earn_days"] <= s.hold_days * 7 / 5)]
+    sort_map = {"คะแนน": ("score", False), "R:R": ("rr", False), "RS 3 เดือน": ("rs63", False),
+                "ย้อนหลัง เฉลี่ย R": ("bt_avg_r", False), "ย้อนหลัง ชนะ %": ("bt_win", False),
+                "งบใกล้สุด": ("earn_days", True)}
+    if sort_by in sort_map:
+        col, asc = sort_map[sort_by]
+        view = view.sort_values(col, ascending=asc, na_position="last")
+    st.caption(f"แสดง {len(view)} จาก {len(base)} ตัว")
 
     show_tech = st.toggle("แสดงคอลัมน์เทคนิค (EMA, RSI, RS, Volume, ภาวะตลาด)", value=False)
     ok = lambda b: "✓" if b is True else ("–" if b is False else "")
     cols = {
         "สถานะ": view["status"],
         "หุ้น": view["symbol"],
+        "กลุ่ม": view["group"],
         "ต้องทำอะไร": view.get("action"),
         "ราคา": view.get("close"),
         "ซื้อที่": view.get("buy_price"),
@@ -265,7 +314,7 @@ with tab_scan:
         "ขายที่เหลือ": view.get("target2"),
         "ขายที่เหลือ %": view.get("target2_pct"),
         "R:R": view.get("rr"),
-        "ถือไม่เกิน": view.get("hold_until"),
+        "ถือไม่เกิน": view.get("hold_until", pd.Series(dtype=object)).fillna("–"),
         "ลงทุน (บาท)": view.get("position_value"),
         "จำนวนหุ้น": view.get("shares"),
         "ย้อนหลัง ชนะ %": view.get("bt_win"),
@@ -291,19 +340,27 @@ with tab_scan:
         })
     table = pd.DataFrame(cols)
 
+    for _c in ["ซื้อที่", "จำนวนหุ้น", "ย้อนหลัง ชนะ %", "ย้อนหลัง เฉลี่ย R", "ย้อนหลัง ไม้", "งบอีก (วัน)"]:
+        if _c in table:
+            _fmt = {"ซื้อที่": "{:,.2f}", "จำนวนหุ้น": "{:,.0f}", "ย้อนหลัง ชนะ %": "{:.0f}%",
+                    "ย้อนหลัง เฉลี่ย R": "{:+.2f}", "ย้อนหลัง ไม้": "{:.0f}", "งบอีก (วัน)": "{:.0f}"}[_c]
+            table[_c] = [(_fmt.format(v) if v == v and v is not None else "–") for v in table[_c]]
+    try:
+        col_cfg = {"สถานะ": st.column_config.Column(pinned=True), "หุ้น": st.column_config.Column(pinned=True)}
+    except TypeError:  # older Streamlit without pinned columns
+        col_cfg = {}
+
     def paint(row):
         return [f"background-color: {STATUS_COLOR.get(row['สถานะ'], '')}; color: #14201c" if col == "สถานะ" else "" for col in row.index]
 
     event = st.dataframe(
         table.style.apply(paint, axis=1).format({
-            "ราคา": "{:,.2f}", "ซื้อที่": "{:,.2f}", "คัดลอส": "{:,.2f}", "คัดลอส %": "{:.1f}%",
+            "ราคา": "{:,.2f}", "คัดลอส": "{:,.2f}", "คัดลอส %": "{:.1f}%",
             "ขายครึ่งแรก": "{:,.2f}", "ขายครึ่งแรก %": "{:+.1f}%", "ขายที่เหลือ": "{:,.2f}", "ขายที่เหลือ %": "{:+.1f}%",
-            "R:R": "{:.2f}", "ลงทุน (บาท)": "{:,.0f}", "จำนวนหุ้น": "{:,.0f}",
-            "ย้อนหลัง ชนะ %": "{:.0f}%", "ย้อนหลัง เฉลี่ย R": "{:+.2f}", "ย้อนหลัง ไม้": "{:.0f}",
-            "คะแนน": "{:.0f}", "งบอีก (วัน)": "{:.0f}", "% วันนี้": "{:+.2f}%", "RSI": "{:.0f}",
+            "R:R": "{:.2f}", "ลงทุน (บาท)": "{:,.0f}", "คะแนน": "{:.0f}", "% วันนี้": "{:+.2f}%", "RSI": "{:.0f}",
             "RS 3 เดือน": "{:+.1f}%", "Vol เทียบเฉลี่ย": "{:.1f}x"}, na_rep="–"),
         width="stretch", hide_index=True, height=min(38 * (len(table) + 1), 900),
-        on_select="rerun", selection_mode="single-row", key="scan_tbl")
+        on_select="rerun", selection_mode="single-row", key="scan_tbl", column_config=col_cfg)
     st.caption("หุ้น DR: ราคาทั้งหมดเป็นของหุ้นต้นทาง (USD/HKD/CNY) ให้ใช้ช่อง % ไปคิดกับราคา DR ในแอปโบรกเกอร์ · "
                "\"ลงทุน (บาท)\" คือขนาดไม้ที่ถ้าโดนคัดลอสจะเสียเท่ากับความเสี่ยงต่อไม้ (ปรับตามภาวะตลาดแล้ว) · "
                "\"ย้อนหลัง\" คือผลถ้าใช้กฎชุดนี้กับหุ้นตัวนั้นใน 3 ปีที่ผ่านมา ไม้น้อยกว่า 5 ไม้ถือว่ายังสรุปไม่ได้")

@@ -320,7 +320,7 @@ def shares_for(row: dict, s: Settings) -> float:
     return float("nan")
 
 
-INDEX_NAMES = {"^SET.BI": "SET", "^IXIC": "Nasdaq", "^HSI": "Hang Seng", "000300.SS": "CSI 300"}
+INDEX_NAMES = {"^SET.BI": "SET", "^IXIC": "Nasdaq", "^HSI": "Hang Seng", "000300.SS": "CSI 300", "^N225": "Nikkei"}
 
 
 def index_for(yahoo: str) -> str:
@@ -331,6 +331,8 @@ def index_for(yahoo: str) -> str:
         return "^HSI"
     if y.endswith(".SZ") or y.endswith(".SS"):
         return "000300.SS"
+    if y.endswith(".T"):
+        return "^N225"
     return "^IXIC"
 
 
@@ -485,13 +487,7 @@ def fetch_earnings(watch: pd.DataFrame, max_age_hours: float = 12) -> dict[str, 
         except Exception:
             cache = {}
     now, today = time.time(), dt.date.today()
-    out = {}
-    for _, w in watch.iterrows():
-        t = w["yahoo"]
-        c = cache.get(t)
-        if c and now - c.get("_ts", 0) < max_age_hours * 3600:
-            out[t] = c
-            continue
+    def lookup(t):
         found = None
         try:
             import yfinance as yf
@@ -507,9 +503,21 @@ def fetch_earnings(watch: pd.DataFrame, max_age_hours: float = 12) -> dict[str, 
         if found is None and str(t).upper().endswith(".BK"):
             start, end = set_deadline_window(today)
             found = {"date": start.isoformat(), "end": end.isoformat(), "source": "ประมาณ (กฎ SET)"}
-        found = (found or {"date": None, "source": "ไม่พบ"}) | {"_ts": now}
-        cache[t] = found
-        out[t] = found
+        return (found or {"date": None, "source": "ไม่พบ"}) | {"_ts": now}
+
+    out, todo = {}, []
+    for t in watch["yahoo"]:
+        c = cache.get(t)
+        if c and now - c.get("_ts", 0) < max_age_hours * 3600:
+            out[t] = c
+        else:
+            todo.append(t)
+    if todo:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for t, f in zip(todo, ex.map(lookup, todo)):
+                cache[t] = f
+                out[t] = f
     try:
         EARN_CACHE.write_text(json.dumps(cache, indent=1, ensure_ascii=False), encoding="utf-8")
     except Exception:
