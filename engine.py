@@ -34,6 +34,7 @@ class Settings:
     resistance_lookback: int = 60     # bars used to find the previous swing high
     lot: int = 100                    # board lot for Thai shares
     earnings_buffer: int = 14         # days: flag a setup if earnings fall inside this window
+    hold_days: int = 15               # trading days: time stop for a swing trade
 
     @classmethod
     def load(cls) -> "Settings":
@@ -65,7 +66,7 @@ def save_watchlist(df: pd.DataFrame) -> None:
 
 
 # ----------------------------------------------------------------- data
-def fetch_prices(tickers: list[str], period: str = "2y") -> dict[str, pd.DataFrame]:
+def fetch_prices(tickers: list[str], period: str = "3y") -> dict[str, pd.DataFrame]:
     """Daily OHLCV per Yahoo ticker. Missing tickers are left out."""
     import yfinance as yf
 
@@ -121,6 +122,109 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 STATUS_ORDER = {"พร้อมเข้า": 0, "ระวังงบ": 1, "R:R ต่ำ": 2, "ใกล้เข้า": 3, "รอย่อ": 4, "นอกแนวโน้ม": 5, "ข้อมูลไม่พอ": 6}
 
 
+def trade_levels(close: float, atr_v: float, low10: float, resistance: float, s: Settings) -> dict:
+    """Entry/stop/targets from several methods. Used by the live scan and the backtest alike.
+
+    Stop  : structure first (0.2 ATR under the lowest low of the last 10 bars), but kept
+            between 1 ATR (noise floor) and atr_mult+0.5 ATR (too wide) from the entry.
+    TP1/2 : candidates are the previous swing high (resistance), 2R, and the stock's
+            expected range over the holding period (ATR x sqrt(hold_days)). Only targets
+            at least 1R away count. TP1 = nearest, TP2 = farthest but capped at the
+            expected range, so the plan stays realistic for a 2-3 week hold.
+    R:R   : blended, assuming half is sold at TP1 and half at TP2."""
+    struct = low10 - 0.2 * atr_v
+    dist = close - struct
+    lo, hi = 1.0 * atr_v, (s.atr_mult + 0.5) * atr_v
+    if lo <= dist <= hi:
+        stop, stop_src = struct, "ใต้จุดต่ำสุดของการย่อ 10 วัน"
+    elif dist < lo:
+        stop, stop_src = close - lo, "1×ATR (จุดต่ำสุดใกล้ราคาเกินไป)"
+    else:
+        stop, stop_src = close - s.atr_mult * atr_v, f"{s.atr_mult:g}×ATR (จุดต่ำสุดไกลเกินไป)"
+    risk = close - stop
+    t_rng = close + atr_v * math.sqrt(max(1, s.hold_days))
+    cands = [(close + 2 * risk, "2R"), (t_rng, f"กรอบแกว่ง {s.hold_days} วัน")]
+    if resistance == resistance and resistance > close:
+        cands.append((resistance, "แนวต้าน"))
+    cands = [c for c in cands if c[0] >= close + 1.0 * risk] or [(close + 2 * risk, "2R")]
+    tp1 = min(cands, key=lambda c: c[0])
+    far = max(cands, key=lambda c: c[0])
+    tp2 = far if far[0] <= max(t_rng, tp1[0]) else (max(t_rng, tp1[0]), f"กรอบแกว่ง {s.hold_days} วัน")
+    blend = 0.5 * tp1[0] + 0.5 * tp2[0]
+    rr = (blend - close) / risk if risk > 0 else float("nan")
+    m = s.min_rr
+    max_entry = (blend + m * stop) / (1 + m)
+    return {"stop": stop, "stop_src": stop_src, "risk": risk,
+            "tp1": tp1[0], "tp1_src": tp1[1], "tp2": tp2[0], "tp2_src": tp2[1],
+            "rr": rr, "max_entry": max_entry}
+
+
+def signal_frame(d: pd.DataFrame) -> pd.DataFrame:
+    """Vectorised version of the three entry conditions (d must already have indicators)."""
+    trend = (d["Close"] > d["EMA50"]) & (d["EMA50"] > d["EMA200"])
+    pull = (d["Low"].rolling(3).min() <= d["EMA20"] + 0.25 * d["ATR"]) & (d["Close"] >= d["EMA50"])
+    rmin = d["RSI"].rolling(5).min()
+    turn = rmin.between(30, 50) & (d["RSI"] > d["RSI"].shift())
+    return pd.DataFrame({"trend": trend, "pullback": pull, "rsi_turn": turn,
+                         "signal": trend & pull & turn}, index=d.index)
+
+
+def backtest(df: pd.DataFrame, s: Settings, return_trades: bool = False) -> dict:
+    """Replay the exact rules on history: enter next day's open after a signal, sell half at
+    TP1 and move the stop to breakeven, sell the rest at TP2, or exit at the close after
+    hold_days. If stop and target touch on the same day the stop is assumed first
+    (conservative). One trade at a time."""
+    d = add_indicators(df)
+    sig = signal_frame(d)["signal"].values
+    o, h, l, c = (d[k].values for k in ("Open", "High", "Low", "Close"))
+    atr_v, n = d["ATR"].values, len(d)
+    trades, i = [], 210
+    while i < n - 1:
+        if not sig[i]:
+            i += 1
+            continue
+        lo10 = l[max(0, i - 9):i + 1].min()
+        res = h[max(0, i - s.resistance_lookback):i].max()
+        lv = trade_levels(c[i], atr_v[i], lo10, res, s)
+        entry = o[i + 1]
+        stop = lv["stop"]
+        if not entry > stop:
+            i += 1
+            continue
+        risk = entry - stop
+        left, R, half = 1.0, 0.0, False
+        j_end = min(i + s.hold_days, n - 1)
+        j = i + 1
+        while j <= j_end:
+            if l[j] <= stop:
+                R += left * (stop - entry) / risk
+                left = 0.0
+                break
+            if not half and h[j] >= lv["tp1"]:
+                R += 0.5 * (lv["tp1"] - entry) / risk
+                left, half, stop = 0.5, True, entry
+            if half and h[j] >= lv["tp2"]:
+                R += left * (lv["tp2"] - entry) / risk
+                left = 0.0
+                break
+            j += 1
+        j = min(j, j_end)
+        if left > 0:
+            R += left * (c[j] - entry) / risk
+        trades.append({"date": d.index[i + 1], "R": R, "days": j - i})
+        i = j + 1
+    if not trades:
+        if return_trades:
+            return []
+        return {"bt_n": 0, "bt_win": float("nan"), "bt_avg_r": float("nan"), "bt_days": float("nan")}
+    rs = pd.Series([t["R"] for t in trades])
+    if return_trades:
+        return trades
+    return {"bt_n": len(trades), "bt_win": float((rs > 0).mean() * 100), "bt_avg_r": float(rs.mean()),
+            "bt_days": float(pd.Series([t["days"] for t in trades]).mean())}
+
+
+
 def analyze(df: pd.DataFrame, s: Settings) -> dict:
     if len(df) < 210:
         return {"status": "ข้อมูลไม่พอ"}
@@ -136,18 +240,15 @@ def analyze(df: pd.DataFrame, s: Settings) -> dict:
     rsi_turn = (30 <= rsi_min5 <= 50) and float(last["RSI"]) > float(prev["RSI"])
     checks = int(trend) + int(pullback) + int(rsi_turn)
 
-    # trade plan
-    stop = close - s.atr_mult * a
-    risk = close - stop
+    # trade plan (shared with the backtest)
+    low10 = float(d["Low"].iloc[-10:].min())
     window = d["High"].iloc[-(s.resistance_lookback + 1):-1]
     resistance = float(window.max()) if len(window) else float("nan")
     support = float(d["Low"].iloc[-20:].min())
-    if resistance > close + 0.5 * risk:
-        target, target_src = resistance, "แนวต้าน"
-    else:
-        target, target_src = close + 2 * risk, "2R (ราคาอยู่ใกล้จุดสูงสุด)"
-    rr = (target - close) / risk if risk > 0 else float("nan")
-    max_entry = target - s.min_rr * risk if target_src == "แนวต้าน" else float("nan")
+    lv = trade_levels(close, a, low10, resistance, s)
+    stop, risk, rr, max_entry = lv["stop"], lv["risk"], lv["rr"], lv["max_entry"]
+    target, target_src = lv["tp1"], lv["tp1_src"]
+    bt = backtest(df, s)
 
     risk_baht = s.portfolio * s.risk_pct / 100
     position_value = min(risk_baht / (risk / close), s.portfolio) if risk > 0 else 0.0
@@ -164,6 +265,13 @@ def analyze(df: pd.DataFrame, s: Settings) -> dict:
         status = "รอย่อ"
 
     vol_ratio = float(last["Volume"] / last["VolAvg20"]) if last["VolAvg20"] else float("nan")
+    c = d["Close"]
+    ret21 = float(c.iloc[-1] / c.iloc[-22] - 1) * 100 if len(c) > 22 else float("nan")
+    ret63 = float(c.iloc[-1] / c.iloc[-64] - 1) * 100 if len(c) > 64 else float("nan")
+    tail = d.iloc[-10:]
+    upv = float(tail.loc[tail["Close"] >= tail["Close"].shift().fillna(tail["Open"]), "Volume"].sum())
+    dnv = float(tail["Volume"].sum()) - upv
+    updown = upv / dnv if dnv > 0 else 2.0
     return {
         "status": status,
         "checks": checks,
@@ -179,6 +287,9 @@ def analyze(df: pd.DataFrame, s: Settings) -> dict:
         "atr_pct": a / close * 100,
         "dist_ema20_atr": (close - e20) / a if a else float("nan"),
         "vol_ratio": vol_ratio,
+        "ret21": ret21,
+        "ret63": ret63,
+        "updown_vol": updown,
         "entry": close,
         "stop": stop,
         "stop_pct": -risk / close * 100,
@@ -188,6 +299,12 @@ def analyze(df: pd.DataFrame, s: Settings) -> dict:
         "target_src": target_src,
         "target_pct": (target / close - 1) * 100,
         "target_2r": close + 2 * risk,
+        "target2": lv["tp2"],
+        "target2_src": lv["tp2_src"],
+        "target2_pct": (lv["tp2"] / close - 1) * 100,
+        "stop_src": lv["stop_src"],
+        "hold_until": (pd.Timestamp.today().normalize() + pd.offsets.BDay(s.hold_days)).strftime("%Y-%m-%d"),
+        **bt,
         "rr": rr,
         "max_entry": max_entry,
         "risk_baht": risk_baht,
@@ -203,22 +320,138 @@ def shares_for(row: dict, s: Settings) -> float:
     return float("nan")
 
 
+INDEX_NAMES = {"^SET.BI": "SET", "^IXIC": "Nasdaq", "^HSI": "Hang Seng", "000300.SS": "CSI 300"}
+
+
+def index_for(yahoo: str) -> str:
+    y = str(yahoo).upper()
+    if y.endswith(".BK"):
+        return "^SET.BI"
+    if y.endswith(".HK"):
+        return "^HSI"
+    if y.endswith(".SZ") or y.endswith(".SS"):
+        return "000300.SS"
+    return "^IXIC"
+
+
+REGIME_MULT = {"ขาขึ้น": 1.0, "ระวัง": 0.5, "ขาลง": 0.25}
+
+
+def market_regime(df: pd.DataFrame | None) -> dict:
+    """ขาขึ้น: close > EMA50 > EMA200 · ระวัง: still above EMA200 but not a clean uptrend · ขาลง: below EMA200."""
+    if df is None or len(df) < 210:
+        return {"state": "ไม่ทราบ", "mult": 1.0}
+    c = df["Close"]
+    e50, e200 = ema(c, 50), ema(c, 200)
+    close, a50, a200 = float(c.iloc[-1]), float(e50.iloc[-1]), float(e200.iloc[-1])
+    if close > a50 > a200:
+        state = "ขาขึ้น"
+    elif close > a200:
+        state = "ระวัง"
+    else:
+        state = "ขาลง"
+    ret63 = float(c.iloc[-1] / c.iloc[-64] - 1) * 100
+    ret21 = float(c.iloc[-1] / c.iloc[-22] - 1) * 100
+    return {"state": state, "mult": REGIME_MULT[state], "close": close, "ema50": a50, "ema200": a200,
+            "ret21": ret21, "ret63": ret63, "chg_pct": float(c.iloc[-1] / c.iloc[-2] - 1) * 100}
+
+
+def regimes(prices: dict[str, pd.DataFrame]) -> dict[str, dict]:
+    return {ix: market_regime(prices.get(ix)) | {"name": nm} for ix, nm in INDEX_NAMES.items()}
+
+
+def _clip01(x):
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(x) else max(0.0, min(1.0, x))
+
+
 def scan(watch: pd.DataFrame, s: Settings, prices: dict[str, pd.DataFrame] | None = None) -> pd.DataFrame:
     if prices is None:
-        prices = fetch_prices(watch["yahoo"].tolist())
+        prices = fetch_prices(watch["yahoo"].tolist() + list(INDEX_NAMES))
+    reg = regimes(prices)
     rows = []
     for _, w in watch.iterrows():
         df = prices.get(w["yahoo"])
         r = analyze(df, s) if df is not None else {"status": "ข้อมูลไม่พอ"}
         r.update({"symbol": w["symbol"], "yahoo": w["yahoo"], "market": w["market"],
                   "group": w["group"], "note": w["note"]})
-        r["shares"] = shares_for(r, s) if r["status"] != "ข้อมูลไม่พอ" else float("nan")
+        ix = index_for(w["yahoo"])
+        g = reg.get(ix, {"state": "ไม่ทราบ", "mult": 1.0})
+        r["index"] = INDEX_NAMES.get(ix, ix)
+        r["regime"] = g["state"]
+        r["size_mult"] = g["mult"]
+        if r["status"] != "ข้อมูลไม่พอ":
+            # relative strength = stock return minus its home index over the same window
+            r["rs63"] = r["ret63"] - g.get("ret63", 0.0) if "ret63" in g else r["ret63"]
+            r["rs21"] = r["ret21"] - g.get("ret21", 0.0) if "ret21" in g else r["ret21"]
+            r["position_value"] = r["position_value"] * g["mult"]
+            r["shares"] = shares_for(r, s)
+        else:
+            r["shares"] = float("nan")
         rows.append(r)
     out = pd.DataFrame(rows)
+
+    # composite score 0-100: RS rank 40% · volume 30% · reward:risk 30%
+    ok = out["status"] != "ข้อมูลไม่พอ"
+    rs = (0.7 * out["rs63"] + 0.3 * out["rs21"]) if "rs63" in out else pd.Series(0.0, index=out.index)
+    out["rs_pct"] = rs.where(ok).rank(pct=True) * 100
+    vol_s = out.get("vol_ratio", pd.Series(dtype=float)).map(lambda v: _clip01((v - 0.5) / 1.5)) * 50 \
+        + out.get("updown_vol", pd.Series(dtype=float)).map(lambda v: _clip01((v - 0.5) / 1.5)) * 50
+    out["vol_score"] = vol_s.where(ok)
+    rr_s = out.get("rr", pd.Series(dtype=float)).map(lambda v: _clip01(v / 3.0)) * 100
+    out["score"] = (0.4 * out["rs_pct"].fillna(0) + 0.3 * vol_s.fillna(0) + 0.3 * rr_s.fillna(0)).where(ok)
+
     out["_o"] = out["status"].map(STATUS_ORDER).fillna(9)
-    out = out.sort_values(["_o", "rr"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
+    out = out.sort_values(["_o", "score"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
+    out = add_actions(out, s)
+    out.attrs["regimes"] = reg
     return out
 
+
+
+def _f(x):
+    return f"{x:,.2f}"
+
+
+def add_actions(res: pd.DataFrame, s: Settings) -> pd.DataFrame:
+    """Turn each status into one plain instruction plus the price to act at."""
+    acts, buys = [], []
+    for _, r in res.iterrows():
+        st_ = r["status"]
+        if st_ == "พร้อมเข้า":
+            buy = min(r["close"] * 1.01, r["max_entry"])
+            acts.append(f"ซื้อได้ ราคาไม่เกิน {_f(buy)}")
+        elif st_ == "ระวังงบ":
+            buy = min(r["close"] * 1.01, r["max_entry"])
+            acts.append(f"งบออกใน {r.get('earn_days', 0):.0f} วัน: รอหลังงบ หรือซื้อครึ่งไม้")
+        elif st_ == "R:R ต่ำ":
+            buy = r["max_entry"]
+            acts.append(f"ตั้งซื้อรอที่ {_f(buy)}")
+        elif st_ == "ใกล้เข้า":
+            buy = r["ema20"]
+            if not r["pullback"]:
+                acts.append(f"รอย่อถึงแถว {_f(r['ema20'])} (EMA20)")
+            elif not r["rsi_turn"]:
+                acts.append("รอ RSI หักหัวขึ้น แล้วซื้อ")
+            else:
+                acts.append("เฝ้าดูพรุ่งนี้")
+        elif st_ == "รอย่อ":
+            buy = r["ema20"]
+            acts.append(f"แนวโน้มดี รอย่อถึง {_f(r['ema20'])}")
+        elif st_ == "นอกแนวโน้ม":
+            buy = float("nan")
+            acts.append("ข้าม")
+        else:
+            buy = float("nan")
+            acts.append("ไม่มีข้อมูล")
+        buys.append(buy)
+    res = res.copy()
+    res["action"] = acts
+    res["buy_price"] = buys
+    return res
 
 # ----------------------------------------------------------------- earnings dates
 EARN_CACHE = DATA / "earnings.json"
@@ -307,7 +540,11 @@ def apply_earnings(res: pd.DataFrame, earn: dict[str, dict], s: Settings) -> pd.
     near = res["earn_days"].le(s.earnings_buffer)
     res.loc[near & res["status"].isin(["พร้อมเข้า", "R:R ต่ำ"]), "status"] = "ระวังงบ"
     res["_o"] = res["status"].map(STATUS_ORDER).fillna(9)
-    return res.sort_values(["_o", "rr"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
+    attrs = dict(res.attrs)
+    res = res.sort_values(["_o", "score"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
+    res = add_actions(res, s)
+    res.attrs.update(attrs)
+    return res
 
 
 # ----------------------------------------------------------------- fundamentals (criteria 1-4 auto, 5 manual)

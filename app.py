@@ -8,9 +8,47 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import importlib
+
 import engine as E
 
+E = importlib.reload(E)  # pick up engine.py changes after a git update without a reboot
+
 st.set_page_config(page_title="Swing Scanner", page_icon="📈", layout="wide")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap');
+html, body, [class*="css"], .stApp, .stMarkdown, button, input, textarea, select, label,
+[data-testid="stMetricValue"], [data-testid="stMetricLabel"], [data-testid="stSidebar"] * {
+  font-family: 'Poppins', 'Prompt', sans-serif !important;
+}
+:root { --ink:#111111; --paper:#F3F1EA; --lime:#D8E64B; --up:#4F7F52; --down:#C2362B; }
+h1 { font-weight: 600 !important; letter-spacing: -0.03em; font-size: 2.6rem !important; }
+h2, h3 { font-weight: 600 !important; letter-spacing: -0.02em; }
+[data-testid="stSidebar"] { background: var(--paper); }
+[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {
+  background: var(--paper); border-radius: 24px; padding: 10px; overflow: hidden;
+}
+.stButton > button { border-radius: 999px !important; border: 1.5px solid var(--ink) !important;
+  background: var(--ink) !important; color: var(--paper) !important; font-weight: 500; }
+.stButton > button:hover { background: var(--paper) !important; color: var(--ink) !important; }
+.bento { display:grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 6px 0 16px; }
+.card { border-radius: 24px; padding: 16px 18px; background: var(--paper); color: var(--ink); min-width: 0; }
+.card.dark { background: var(--ink); color: var(--paper); }
+.card.wide { grid-column: span 2; }
+@media (max-width: 640px) { .card.wide { grid-column: span 1; } }
+.pill { display:inline-block; border:1.5px solid currentColor; border-radius:999px; padding:2px 12px;
+  font-size:.78rem; font-weight:500; margin: 0 6px 8px 0; white-space: nowrap; }
+.pill.solid { background: var(--lime); color: var(--ink); border-color: var(--lime); }
+.big { font-size: 2.6rem; font-weight: 500; letter-spacing: -0.04em; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.mid { font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.lab { font-size: .8rem; opacity: .7; margin-top: 4px; }
+.act { font-size: 1.15rem; font-weight: 500; margin-top: 4px; }
+.neg { color: var(--down); } .pos { color: var(--up); }
+.card.dark .pos { color: var(--lime); } .card.dark .neg { color: #FF8A7A; }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- helpers
 def fmt(x, d=2):
@@ -34,31 +72,49 @@ def get_earnings(tickers: tuple[str, ...]):
 
 
 STATUS_COLOR = {
-    "พร้อมเข้า": "#d6f2df", "R:R ต่ำ": "#fbeccc", "ใกล้เข้า": "#fff5d6",
-    "ระวังงบ": "#f6d9ef", "รอย่อ": "#eef1f4", "นอกแนวโน้ม": "#f8dcd8", "ข้อมูลไม่พอ": "#eeeeee",
+    "พร้อมเข้า": "#86efac",   # strong green
+    "ใกล้เข้า": "#d1fae5",    # light green
+    "R:R ต่ำ": "#fef3c7",     # amber: valid setup, entry price too high
+    "รอย่อ": "#e5e7eb",       # neutral grey
+    "นอกแนวโน้ม": "#f3f4f6",  # light grey: simply not a candidate
+    "ระวังงบ": "#fca5a5",     # red: genuine risk
+    "ข้อมูลไม่พอ": "#f3f4f6",
 }
 
 # ---------------------------------------------------------------- sidebar
 s = E.Settings.load()
 with st.sidebar:
     st.header("ตั้งค่า")
-    s.portfolio = st.number_input("ขนาดพอร์ต (บาท)", min_value=10_000.0, value=float(s.portfolio), step=50_000.0, format="%.0f")
-    s.risk_pct = st.number_input("เสี่ยงต่อไม้ (%)", min_value=0.1, max_value=5.0, value=float(s.risk_pct), step=0.1)
-    s.atr_mult = st.number_input("Stop = ATR ×", min_value=0.5, max_value=4.0, value=float(s.atr_mult), step=0.25)
-    s.min_rr = st.number_input("R:R ขั้นต่ำ", min_value=1.0, max_value=5.0, value=float(s.min_rr), step=0.5)
-    s.resistance_lookback = st.number_input("หาแนวต้านย้อนหลัง (วัน)", min_value=20, max_value=250, value=int(s.resistance_lookback), step=10)
-    s.earnings_buffer = st.number_input("เตือนเมื่องบออกภายใน (วัน)", min_value=0, max_value=45, value=int(s.earnings_buffer), step=1)
+    s.portfolio = st.number_input("ขนาดพอร์ต (บาท)", min_value=10_000.0, value=float(s.portfolio), step=50_000.0, format="%.0f",
+        help="เงินทั้งหมดที่ใช้เทรด ระบบใช้คำนวณว่าแต่ละไม้ควรซื้อกี่บาท")
+    s.risk_pct = st.number_input("เสี่ยงต่อไม้ (%)", min_value=0.1, max_value=5.0, value=float(s.risk_pct), step=0.1,
+        help="ถ้าโดนคัดลอส ยอมขาดทุนกี่ % ของพอร์ต มือใหม่ 0.5–1% · ไม่ควรเกิน 2%")
+    st.caption(f"→ ถ้าโดนคัดลอส จะเสียไม่เกิน **{fmt(s.portfolio * s.risk_pct / 100, 0)} บาท** ต่อไม้")
+    s.atr_mult = st.number_input("ระยะคัดลอสสำรอง (× ATR)", min_value=0.5, max_value=4.0, value=float(s.atr_mult), step=0.25,
+        help="ATR = ระยะที่หุ้นแกว่งเฉลี่ยต่อวัน ปกติระบบวางคัดลอสใต้จุดต่ำสุดของการย่อ "
+             "แต่ถ้าจุดนั้นไกลเกินไป จะใช้ระยะนี้แทน และจะไม่ให้คัดลอสห่างเกิน (ค่านี้ + 0.5) × ATR")
+    s.min_rr = st.number_input("R:R ขั้นต่ำ", min_value=1.0, max_value=5.0, value=float(s.min_rr), step=0.5,
+        help="กำไรที่คาดหวังต้องมากกว่าความเสี่ยงกี่เท่า 2 = ยอมเสีย 1 บาทเพื่อลุ้นกำไร 2 บาท "
+             "ตัวที่ต่ำกว่านี้จะขึ้น 'R:R ต่ำ' และบอกราคาที่ควรตั้งซื้อรอ")
+    s.hold_days = st.number_input("ถือไม่เกิน (วันทำการ)", min_value=5, max_value=40, value=int(s.hold_days), step=1,
+        help="ครบกำหนดแล้วยังไม่ถึงเป้า ให้ขายออกแล้วหาไม้ใหม่ · 15 วันทำการ ≈ 3 สัปดาห์ "
+             "ค่านี้ใช้กำหนดเป้าขายที่ 2 ด้วย (หุ้นแกว่งได้ประมาณ ATR × √วัน)")
+    s.resistance_lookback = st.number_input("หาแนวต้านย้อนหลัง (วัน)", min_value=20, max_value=250, value=int(s.resistance_lookback), step=10,
+        help="ใช้จุดสูงสุดในช่วงนี้เป็นแนวต้าน 60 วัน ≈ 3 เดือน")
+    s.earnings_buffer = st.number_input("เตือนเมื่องบออกภายใน (วัน)", min_value=0, max_value=45, value=int(s.earnings_buffer), step=1,
+        help="ถ้างบจะออกภายในจำนวนวันนี้ สถานะจะเปลี่ยนเป็น 'ระวังงบ' เพราะราคาอาจกระโดดข้ามคัดลอส "
+             "แนะนำให้ตั้งเท่ากับระยะที่ถือจริง (ประมาณ 21 วัน)")
     if st.button("บันทึกค่า", width="stretch"):
         s.save()
         st.success("บันทึกแล้ว")
     st.divider()
     if st.button("ดึงราคาใหม่", width="stretch"):
         get_prices.clear()
-    st.caption(f"ความเสี่ยงต่อไม้: {fmt(s.portfolio * s.risk_pct / 100, 0)} บาท")
+    st.caption("ราคามาจาก Yahoo Finance เก็บไว้ 1 ชั่วโมง")
 
 watch = E.load_watchlist()
 with st.spinner(f"กำลังดึงราคา {len(watch)} ตัว จาก Yahoo Finance..."):
-    prices = get_prices(tuple(watch["yahoo"]))
+    prices = get_prices(tuple(watch["yahoo"]) + tuple(E.INDEX_NAMES))
 res = E.scan(watch, s, prices)
 with st.spinner("กำลังหาวันประกาศงบ..."):
     try:
@@ -80,10 +136,106 @@ if len(missing) == len(res):
 elif missing:
     st.warning("ดึงข้อมูลไม่ได้หรือข้อมูลสั้นเกินไป: " + ", ".join(missing) + " — ตรวจรหัส Yahoo ในแท็บรายชื่อหุ้น")
 
+def render_detail(r, key: str) -> None:
+    risk_b = r["position_value"] * (r["entry"] - r["stop"]) / r["entry"] if r["entry"] else float("nan")
+    gain = r["position_value"] * 0.5 * (r["target"] / r["entry"] - 1) + r["position_value"] * 0.5 * (r["target2"] / r["entry"] - 1)
+    has_bt = bool(r.get("bt_n", 0))
+    shares = "" if r.get("shares") != r.get("shares") else f"{r['shares']:,.0f} หุ้น · "
+    bt_main = ("ชนะ " + format(r["bt_win"], ".0f") + "%") if has_bt else "–"
+    bt_sub = (format(r["bt_n"], ".0f") + " ไม้ · เฉลี่ย " + format(r["bt_avg_r"], "+.2f") + "R · ถือ "
+              + format(r["bt_days"], ".0f") + " วัน") if has_bt else "ยังไม่เคยเกิดสัญญาณ"
+    cards = f"""
+<div class="bento">
+  <div class="card dark wide">
+    <span class="pill">แผนเทรด · {r['symbol']}</span><span class="pill solid">{r['status']}</span>
+    <div class="act">{r['action']}</div>
+    <div class="big"><span class="pos">+{fmt(r['target2_pct'],1)}%</span> <span style="opacity:.45">/</span> <span class="neg">{fmt(r['stop_pct'],1)}%</span></div>
+    <div class="lab">เป้าขายที่เหลือ / คัดลอส · R:R {fmt(r['rr'])} (ขายครึ่ง/ครึ่ง)</div>
+  </div>
+  <div class="card"><span class="pill">ซื้อที่</span><div class="mid">{fmt(r['buy_price'])}</div><div class="lab">ราคาล่าสุด {fmt(r['close'])}</div></div>
+  <div class="card"><span class="pill">คัดลอส</span><div class="mid neg">{fmt(r['stop'])}</div><div class="lab">{fmt(r['stop_pct'],1)}% · {r['stop_src']}</div></div>
+  <div class="card"><span class="pill">ขายครึ่งแรก</span><div class="mid pos">{fmt(r['target'])}</div><div class="lab">+{fmt(r['target_pct'],1)}% · {r['target_src']} · แล้วเลื่อนคัดลอสมาที่ทุน</div></div>
+  <div class="card"><span class="pill">ขายที่เหลือ</span><div class="mid pos">{fmt(r['target2'])}</div><div class="lab">+{fmt(r['target2_pct'],1)}% · {r['target2_src']}</div></div>
+  <div class="card"><span class="pill">ถือไม่เกิน</span><div class="mid">{r['hold_until']}</div><div class="lab">ไม่ถึงเป้า ขายที่ราคาปิดวันนั้น</div></div>
+  <div class="card"><span class="pill">ขนาดไม้</span><div class="mid">{fmt(r['position_value'],0)}</div><div class="lab">{shares}ผิดทาง −{fmt(risk_b,0)} · ถูกทาง +{fmt(gain,0)} บาท</div></div>
+  <div class="card dark"><span class="pill">ย้อนหลัง 3 ปี</span><div class="mid">{bt_main}</div><div class="lab">{bt_sub}</div></div>
+  <div class="card"><span class="pill">คะแนน</span><div class="mid">{fmt(r.get('score'),0)}<span style="font-size:.9rem;opacity:.6">/100</span></div>
+    <div class="lab">RS 3 เดือน {fmt(r.get('rs63'),1)}% · Vol {fmt(r['vol_ratio'],1)}x · ตลาด{r.get('regime','')}</div></div>
+</div>"""
+    st.markdown(cards, unsafe_allow_html=True)
+
+    mode = st.radio("รูปแบบกราฟ", ["เส้น", "แท่งเทียน"], horizontal=True, key=f"mode_{key}", label_visibility="collapsed")
+    df = E.add_indicators(prices[r["yahoo"]]).iloc[-120:]
+    PAPER, INK, UP, DOWN, GRID = "#F3F1EA", "#111111", "#4F7F52", "#C2362B", "#E2DFD5"
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
+    if mode == "เส้น":
+        fig.add_scatter(x=df.index, y=df["Close"], name="ราคา", line=dict(color=INK, width=2.6, shape="spline", smoothing=0.6), row=1, col=1)
+    else:
+        fig.add_candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="ราคา",
+                            increasing_line_color=UP, decreasing_line_color=DOWN,
+                            increasing_fillcolor=UP, decreasing_fillcolor=DOWN, row=1, col=1)
+    for n, col, dash in [("EMA20", "#7A7A7A", "solid"), ("EMA50", "#B0AD9F", "dash")]:
+        fig.add_scatter(x=df.index, y=df[n], name=n, line=dict(color=col, width=1.3, dash=dash), row=1, col=1)
+    fig.add_vline(x=df.index[-1], line_color=INK, line_width=1)
+    fig.add_scatter(x=[df.index[-1]], y=[df["Close"].iloc[-1]], mode="markers", showlegend=False,
+                    marker=dict(size=11, color=INK, line=dict(color=PAPER, width=2)), row=1, col=1)
+    for y, label, col in [(r["stop"], "คัดลอส", DOWN), (r["buy_price"], "ซื้อ", INK),
+                          (r["target"], "ขายครึ่งแรก", UP), (r["target2"], "ขายที่เหลือ", UP)]:
+        if y == y:
+            fig.add_hline(y=y, line_dash="dot", line_color=col, line_width=1.2, row=1, col=1,
+                          annotation_text=f" {label} {fmt(y)} ", annotation_position="top left",
+                          annotation_font=dict(color=PAPER, size=11), annotation_bgcolor=col)
+    vcol = [UP if c_ >= o_ else INK for c_, o_ in zip(df["Close"], df["Open"])]
+    fig.add_bar(x=df.index, y=df["Volume"], marker_color=vcol, marker_line_width=0, name="Volume", row=2, col=1)
+    fig.update_layout(height=560, showlegend=False, margin=dict(l=8, r=8, t=8, b=8), bargap=0.35,
+                      paper_bgcolor=PAPER, plot_bgcolor=PAPER, xaxis_rangeslider_visible=False,
+                      font=dict(family="Poppins, Prompt, sans-serif", color=INK, size=12), hovermode="x unified")
+    fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])], showline=False, ticks="")
+    fig.update_yaxes(gridcolor=GRID, zeroline=False, side="right")
+    fig.update_yaxes(showgrid=False, showticklabels=False, row=2, col=1)
+    st.plotly_chart(fig, width="stretch", key=f"px_{key}", config={"displayModeBar": False})
+
+    rsi_fig = go.Figure()
+    rsi_fig.add_hrect(y0=30, y1=50, fillcolor="#D8E64B", opacity=0.35, line_width=0)
+    rsi_fig.add_scatter(x=df.index, y=df["RSI"], line=dict(color=INK, width=2, shape="spline", smoothing=0.6))
+    rsi_fig.add_scatter(x=[df.index[-1]], y=[df["RSI"].iloc[-1]], mode="markers", marker=dict(size=9, color=INK))
+    rsi_fig.update_layout(height=150, showlegend=False, margin=dict(l=8, r=8, t=26, b=8), yaxis_range=[0, 100],
+                          paper_bgcolor=PAPER, plot_bgcolor=PAPER, font=dict(family="Poppins, Prompt, sans-serif", color=INK),
+                          title=dict(text=f"RSI {fmt(r['rsi'],0)} · โซนย่อ 30–50", font=dict(size=12), x=0.01, y=0.95))
+    rsi_fig.update_xaxes(showgrid=False, rangebreaks=[dict(bounds=["sat", "mon"])])
+    rsi_fig.update_yaxes(gridcolor=GRID, side="right", tickvals=[30, 50, 70])
+    st.plotly_chart(rsi_fig, width="stretch", key=f"rsi_{key}", config={"displayModeBar": False})
+
+    st.caption(
+        f"เงื่อนไข {r['checks']}/3: แนวโน้ม {'✓' if r['trend'] else '–'} · ย่อถึง EMA20 {'✓' if r['pullback'] else '–'} · "
+        f"RSI หักหัวขึ้น {'✓' if r['rsi_turn'] else '–'} · ATR {fmt(r['atr'])} ({fmt(r['atr_pct'], 1)}%/วัน) · "
+        f"แนวต้าน {fmt(r['resistance'])} · ราคาเข้าสูงสุดที่ยังได้ R:R {s.min_rr:g}: {fmt(r['max_entry'])} · "
+        f"งบ: {r.get('earn_date') or '–'} ({r.get('earn_src') or 'ไม่พบ'})")
+
+
 c = res["status"].value_counts()
-m = st.columns(6)
-for i, k in enumerate(["พร้อมเข้า", "ระวังงบ", "ใกล้เข้า", "R:R ต่ำ", "รอย่อ", "นอกแนวโน้ม"]):
-    m[i].metric(k, int(c.get(k, 0)))
+_ready = int(c.get("พร้อมเข้า", 0))
+_cards = [f'<div class="card dark wide"><span class="pill">วันนี้</span><div class="big">{_ready} ตัวพร้อมเข้า</div>'
+          f'<div class="lab">ระวังงบ {int(c.get("ระวังงบ", 0))} · R:R ต่ำ {int(c.get("R:R ต่ำ", 0))} · ใกล้เข้า {int(c.get("ใกล้เข้า", 0))}</div></div>']
+for _k in ["ใกล้เข้า", "รอย่อ", "นอกแนวโน้ม"]:
+    _cards.append(f'<div class="card"><span class="pill">{_k}</span><div class="big">{int(c.get(_k, 0))}</div></div>')
+st.markdown('<div class="bento">' + "".join(_cards) + "</div>", unsafe_allow_html=True)
+
+REGIME_ICON = {"ขาขึ้น": "🟢", "ระวัง": "🟡", "ขาลง": "🔴", "ไม่ทราบ": "⚪"}
+reg = res.attrs.get("regimes", {})
+used = {E.index_for(y) for y in watch["yahoo"]}
+parts = []
+for ix in [i for i in E.INDEX_NAMES if i in used]:
+    g = reg.get(ix, {})
+    if g.get("state") == "ไม่ทราบ":
+        parts.append(f"{REGIME_ICON['ไม่ทราบ']} **{g.get('name', ix)}** ไม่มีข้อมูล")
+    else:
+        parts.append(f"{REGIME_ICON[g['state']]} **{g['name']}** {g['state']} "
+                     f"(3 เดือน {g['ret63']:+.1f}% · ขนาดไม้ ×{g['mult']:g})")
+st.markdown('<div class="card"><span class="pill solid">ภาวะตลาด</span> ' + " ".join(f'<span class="pill">{p_}</span>' for p_ in parts).replace("**", "") + "</div><br>", unsafe_allow_html=True)
+if any(reg.get(ix, {}).get("state") == "ขาลง" for ix in used):
+    st.caption("ตลาดขาลงอยู่ใต้ EMA200: สัญญาณซื้อล้มเหลวบ่อยขึ้น ระบบลดขนาดไม้ที่แนะนำเหลือ 25% ของปกติ")
 
 tab_scan, tab_chart, tab_fund, tab_list, tab_help = st.tabs(
     ["สแกน", "กราฟรายตัว", "พื้นฐาน 5 เกณฑ์", "รายชื่อหุ้น", "วิธีอ่าน"])
@@ -97,84 +249,82 @@ with tab_scan:
     if mk != "ทั้งหมด":
         view = view[view["market"] == mk]
 
+    show_tech = st.toggle("แสดงคอลัมน์เทคนิค (EMA, RSI, RS, Volume, ภาวะตลาด)", value=False)
     ok = lambda b: "✓" if b is True else ("–" if b is False else "")
-    table = pd.DataFrame({
+    cols = {
         "สถานะ": view["status"],
         "หุ้น": view["symbol"],
-        "ตลาด": view["market"],
+        "ต้องทำอะไร": view.get("action"),
         "ราคา": view.get("close"),
-        "% วันนี้": view.get("chg_pct"),
-        "แนวโน้ม": view.get("trend", pd.Series(dtype=object)).map(ok),
-        "ย่อ EMA20": view.get("pullback", pd.Series(dtype=object)).map(ok),
-        "RSI หักขึ้น": view.get("rsi_turn", pd.Series(dtype=object)).map(ok),
-        "RSI": view.get("rsi"),
-        "Stop": view.get("stop"),
-        "Stop %": view.get("stop_pct"),
-        "เป้า": view.get("target"),
-        "เป้า %": view.get("target_pct"),
+        "ซื้อที่": view.get("buy_price"),
+        "คัดลอส": view.get("stop"),
+        "คัดลอส %": view.get("stop_pct"),
+        "ขายครึ่งแรก": view.get("target"),
+        "ขายครึ่งแรก %": view.get("target_pct"),
+        "ขายที่เหลือ": view.get("target2"),
+        "ขายที่เหลือ %": view.get("target2_pct"),
         "R:R": view.get("rr"),
-        "ราคาเข้าสูงสุด": view.get("max_entry"),
+        "ถือไม่เกิน": view.get("hold_until"),
         "ลงทุน (บาท)": view.get("position_value"),
         "จำนวนหุ้น": view.get("shares"),
+        "ย้อนหลัง ชนะ %": view.get("bt_win"),
+        "ย้อนหลัง เฉลี่ย R": view.get("bt_avg_r"),
+        "ย้อนหลัง ไม้": view.get("bt_n"),
+        "คะแนน": view.get("score"),
         "งบอีก (วัน)": view.get("earn_days"),
-        "วันงบ": view.get("earn_date"),
-        "ที่มาวันงบ": view.get("earn_src"),
-        "หมายเหตุ": view["note"],
-    })
+    }
+    if show_tech:
+        cols.update({
+            "ตลาด": view["market"],
+            "ภาวะตลาด": view.get("regime"),
+            "% วันนี้": view.get("chg_pct"),
+            "แนวโน้ม": view.get("trend", pd.Series(dtype=object)).map(ok),
+            "ย่อ EMA20": view.get("pullback", pd.Series(dtype=object)).map(ok),
+            "RSI หักขึ้น": view.get("rsi_turn", pd.Series(dtype=object)).map(ok),
+            "RSI": view.get("rsi"),
+            "RS 3 เดือน": view.get("rs63"),
+            "Vol เทียบเฉลี่ย": view.get("vol_ratio"),
+            "วันงบ": view.get("earn_date"),
+            "ที่มาวันงบ": view.get("earn_src"),
+            "หมายเหตุ": view["note"],
+        })
+    table = pd.DataFrame(cols)
 
     def paint(row):
         return [f"background-color: {STATUS_COLOR.get(row['สถานะ'], '')}; color: #14201c" if col == "สถานะ" else "" for col in row.index]
 
-    st.dataframe(
+    event = st.dataframe(
         table.style.apply(paint, axis=1).format({
-            "ราคา": "{:,.2f}", "% วันนี้": "{:+.2f}%", "RSI": "{:.0f}", "Stop": "{:,.2f}", "Stop %": "{:.1f}%",
-            "เป้า": "{:,.2f}", "เป้า %": "{:+.1f}%", "R:R": "{:.2f}", "ราคาเข้าสูงสุด": "{:,.2f}",
-            "ลงทุน (บาท)": "{:,.0f}", "จำนวนหุ้น": "{:,.0f}", "งบอีก (วัน)": "{:.0f}"}, na_rep="–"),
-        width="stretch", hide_index=True, height=min(38 * (len(table) + 1), 900))
-    st.caption("หุ้น DR: ราคา stop และเป้าเป็นของหุ้นต้นทาง (USD/HKD/CNY) ให้ใช้ % ไปคำนวณกับราคา DR ในแอปโบรกเกอร์ · "
-               "\"ลงทุน (บาท)\" คือขนาดไม้ที่ทำให้ถ้าโดน stop จะขาดทุนเท่ากับความเสี่ยงต่อไม้พอดี · "
-               "วันงบ \"ประมาณ (กฎ SET)\" คือช่วงสุดท้ายก่อนครบกำหนดส่งงบ ไม่ใช่วันประกาศจริง")
+            "ราคา": "{:,.2f}", "ซื้อที่": "{:,.2f}", "คัดลอส": "{:,.2f}", "คัดลอส %": "{:.1f}%",
+            "ขายครึ่งแรก": "{:,.2f}", "ขายครึ่งแรก %": "{:+.1f}%", "ขายที่เหลือ": "{:,.2f}", "ขายที่เหลือ %": "{:+.1f}%",
+            "R:R": "{:.2f}", "ลงทุน (บาท)": "{:,.0f}", "จำนวนหุ้น": "{:,.0f}",
+            "ย้อนหลัง ชนะ %": "{:.0f}%", "ย้อนหลัง เฉลี่ย R": "{:+.2f}", "ย้อนหลัง ไม้": "{:.0f}",
+            "คะแนน": "{:.0f}", "งบอีก (วัน)": "{:.0f}", "% วันนี้": "{:+.2f}%", "RSI": "{:.0f}",
+            "RS 3 เดือน": "{:+.1f}%", "Vol เทียบเฉลี่ย": "{:.1f}x"}, na_rep="–"),
+        width="stretch", hide_index=True, height=min(38 * (len(table) + 1), 900),
+        on_select="rerun", selection_mode="single-row", key="scan_tbl")
+    st.caption("หุ้น DR: ราคาทั้งหมดเป็นของหุ้นต้นทาง (USD/HKD/CNY) ให้ใช้ช่อง % ไปคิดกับราคา DR ในแอปโบรกเกอร์ · "
+               "\"ลงทุน (บาท)\" คือขนาดไม้ที่ถ้าโดนคัดลอสจะเสียเท่ากับความเสี่ยงต่อไม้ (ปรับตามภาวะตลาดแล้ว) · "
+               "\"ย้อนหลัง\" คือผลถ้าใช้กฎชุดนี้กับหุ้นตัวนั้นใน 3 ปีที่ผ่านมา ไม้น้อยกว่า 5 ไม้ถือว่ายังสรุปไม่ได้")
+    rows = event.selection.rows if event is not None else []
+    if rows:
+        sym = table.iloc[rows[0]]["หุ้น"]
+        st.session_state["picked"] = sym
+        r_sel = res[res["symbol"] == sym]
+        if len(r_sel) and r_sel.iloc[0]["status"] != "ข้อมูลไม่พอ":
+            st.subheader(f"{sym} · {r_sel.iloc[0]['status']}")
+            render_detail(r_sel.iloc[0], "inline")
+    else:
+        st.caption("คลิกแถวในตารางเพื่อดูกราฟและแผนเทรดของหุ้นตัวนั้นด้านล่างนี้")
 
 # ---------------------------------------------------------------- chart
 with tab_chart:
     syms = res[res["status"] != "ข้อมูลไม่พอ"]["symbol"].tolist()
     if syms:
-        pick = st.selectbox("เลือกหุ้น", syms)
-        r = res[res["symbol"] == pick].iloc[0]
-        df = E.add_indicators(prices[r["yahoo"]]).iloc[-160:]
-        fig = go.Figure()
-        fig.add_candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-                            name="ราคา", increasing_line_color="#15804a", decreasing_line_color="#c2362b")
-        for n, col in [("EMA20", "#2f7fd8"), ("EMA50", "#d98a1c"), ("EMA200", "#7a4fc9")]:
-            fig.add_scatter(x=df.index, y=df[n], name=n, line=dict(width=1.4, color=col))
-        for y, label, col in [(r["stop"], "Stop", "#c2362b"), (r["entry"], "ซื้อ", "#555"),
-                              (r["target"], "เป้า", "#15804a")]:
-            fig.add_hline(y=y, line_dash="dot", line_color=col, annotation_text=f"{label} {fmt(y)}",
-                          annotation_position="right")
-        fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10),
-                          legend=dict(orientation="h", y=1.04))
-        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-        st.plotly_chart(fig, width="stretch")
-
-        rsi_fig = go.Figure()
-        rsi_fig.add_scatter(x=df.index, y=df["RSI"], name="RSI", line=dict(color="#0b6e5f"))
-        for y in (30, 50, 70):
-            rsi_fig.add_hline(y=y, line_dash="dot", line_color="#999")
-        rsi_fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), yaxis_range=[0, 100])
-        rsi_fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-        st.plotly_chart(rsi_fig, width="stretch")
-
-        k = st.columns(4)
-        k[0].metric("สถานะ", r["status"], f"{r['checks']}/3 เงื่อนไข")
-        k[1].metric("Stop", fmt(r["stop"]), f"{fmt(r['stop_pct'], 1)}%")
-        k[2].metric("เป้า", fmt(r["target"]), f"+{fmt(r['target_pct'], 1)}% ({r['target_src']})")
-        k[3].metric("R:R", fmt(r["rr"]), f"ATR {fmt(r['atr'])} ({fmt(r['atr_pct'], 1)}%)")
-        st.markdown(
-            f"- เลื่อน stop มาที่ทุนเมื่อราคาถึง **{fmt(r['entry'] + (r['entry'] - r['stop']))}** (กำไร 1R)\n"
-            f"- เป้า 2R: **{fmt(r['target_2r'])}** · แนวรับ 20 วัน: **{fmt(r['support20'])}**\n"
-            f"- ราคาเข้าสูงสุดที่ยังได้ R:R {s.min_rr}: **{fmt(r['max_entry'])}**\n"
-            f"- Volume วันล่าสุด = {fmt(r['vol_ratio'], 1)} เท่าของค่าเฉลี่ย 20 วัน\n"
-            f"- วันประกาศงบ: **{r.get('earn_date') or '–'}** ({r.get('earn_src') or 'ไม่พบ'})")
+        picked = st.session_state.get("picked")
+        idx = syms.index(picked) if picked in syms else 0
+        pick = st.selectbox("เลือกหุ้น", syms, index=idx)
+        render_detail(res[res["symbol"] == pick].iloc[0], "tab")
 
 # ---------------------------------------------------------------- fundamentals
 with tab_fund:
@@ -247,11 +397,23 @@ with tab_help:
 - **รอย่อ**: แนวโน้มดี แต่ราคายังไม่ย่อ
 - **นอกแนวโน้ม**: ข้ามไปก่อน
 
-**แผนการเทรด**
-- Stop = ราคาซื้อ − (ตัวคูณ × ATR14)
-- เป้า = จุดสูงสุดของช่วงย้อนหลัง (แนวต้าน) ถ้าราคาอยู่ใกล้จุดสูงสุดแล้ว ใช้ 2R แทน
-- ถึง 1R เลื่อน stop มาที่ทุน · ถึงแนวต้าน ขายครึ่งหนึ่ง ที่เหลือใช้ EMA20 เป็น trailing stop
-- ไม่ถือข้ามวันประกาศงบ ถ้ายังไม่มีกำไรอย่างน้อย 1R · ครบ 4 สัปดาห์ไม่ถึงเป้า ให้ออก
+**คะแนน (0–100) ใช้จัดอันดับตัวที่สถานะเดียวกัน**
+- 40% **Relative Strength**: ผลตอบแทน 3 เดือน (น้ำหนัก 70%) และ 1 เดือน (30%) เทียบดัชนีของตลาดตัวเอง แล้วจัดอันดับในลิสต์
+- 30% **Volume**: วันล่าสุดเทียบค่าเฉลี่ย 20 วัน และสัดส่วน volume วันขึ้นต่อวันลงใน 10 วัน
+- 30% **R:R**: เต็มเมื่อ R:R ถึง 3
+
+**ภาวะตลาด** ดูจากดัชนี (SET สำหรับหุ้นไทย, Nasdaq สำหรับหุ้นสหรัฐ, Hang Seng สำหรับ Tencent, CSI 300 สำหรับ CATL)
+- ขาขึ้น: ดัชนี > EMA50 > EMA200 · ขนาดไม้ปกติ
+- ระวัง: ยังอยู่เหนือ EMA200 แต่ไม่ใช่ขาขึ้นชัด · ขนาดไม้ 50%
+- ขาลง: ต่ำกว่า EMA200 · ขนาดไม้ 25%
+
+**แผนการเทรด (คำนวณจากหลายวิธีประกอบกัน)**
+- **ซื้อที่**: พร้อมเข้า = ราคาปัจจุบัน ไม่เกิน +1% และไม่เกินราคาที่ยังได้ R:R ขั้นต่ำ · R:R ต่ำ = ราคาที่ควรตั้งซื้อรอ · ใกล้เข้า/รอย่อ = แถวเส้น EMA20
+- **คัดลอส**: วางใต้จุดต่ำสุดของการย่อ 10 วัน (เผื่อ 0.2 ATR) ถ้าจุดนั้นใกล้ราคาเกิน 1 ATR จะขยับลงเป็น 1 ATR กันโดนสะบัด ถ้าไกลเกินจะใช้ ATR × ค่าที่ตั้งไว้
+- **ขายครึ่งแรก / ขายที่เหลือ**: เลือกจาก 3 วิธี ได้แก่ แนวต้านเดิม, 2R (กำไร 2 เท่าของความเสี่ยง) และกรอบแกว่งตามธรรมชาติในช่วงที่ถือ (ATR × √วันที่ถือ) ใช้เฉพาะเป้าที่ไกลอย่างน้อย 1R จุดใกล้สุดคือขายครึ่งแรก จุดไกลสุดคือขายที่เหลือ แต่ไม่เกินกรอบแกว่ง เพื่อให้เป็นไปได้จริงใน 2–3 สัปดาห์
+- **หลังขายครึ่งแรก** เลื่อนคัดลอสของที่เหลือมาที่ราคาทุน ไม้นี้จะไม่ขาดทุนแล้ว
+- **ถือไม่เกิน**: ครบกำหนดแล้วยังไม่ถึงเป้า ให้ขายที่ราคาปิดวันนั้น
+- **ย้อนหลัง 3 ปี**: นำกฎทั้งหมดนี้ไปทดสอบกับราคาจริงย้อนหลังของหุ้นตัวนั้น (ซื้อที่ราคาเปิดวันถัดจากสัญญาณ, วันไหนแตะทั้งคัดลอสและเป้า ถือว่าโดนคัดลอสก่อน) "เฉลี่ย R" เป็นบวกแปลว่ากฎนี้เคยทำเงินกับหุ้นตัวนั้น ถ้าน้อยกว่า 5 ไม้ ยังเชื่อถือไม่ได้
 
 ข้อมูลจาก Yahoo Finance ล่าช้าได้ และบางครั้งดึงไม่สำเร็จ ผลสแกนเป็นเครื่องมือช่วยตามกฎที่ตั้งไว้ ไม่ใช่คำแนะนำการลงทุน
 """)
